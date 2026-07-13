@@ -510,14 +510,14 @@ test.describe('Projects API', () => {
     const project = await createProject(request, {
       name: 'Defaults Project',
       repoPath,
-      defaultAgentType: 'claude',
+      defaultAgentType: 'oh-my-pi',
       defaultPriority: 'high',
       defaultBaseBranch: 'develop',
       defaultUseWorktree: true,
     });
     createdProjectIds.push(project.id);
     expect(project).toMatchObject({
-      defaultAgentType: 'claude',
+      defaultAgentType: 'oh-my-pi',
       defaultPriority: 'high',
       defaultBaseBranch: 'develop',
       defaultUseWorktree: true,
@@ -530,7 +530,7 @@ test.describe('Projects API', () => {
     });
     createdTaskIds.push(inherited.id);
     expect(inherited).toMatchObject({
-      agentType: 'claude',
+      agentType: 'oh-my-pi',
       priority: 'high',
       baseBranch: 'develop',
       useWorktree: true,

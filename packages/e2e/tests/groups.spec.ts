@@ -253,6 +253,7 @@ test.describe('Task Groups API', () => {
           { title: 'Copilot task', agentType: 'copilot' },
           { title: 'Claude task', agentType: 'claude' },
           { title: 'Codex task', agentType: 'codex' },
+          { title: 'Oh My Pi task', agentType: 'oh-my-pi' },
         ],
       },
     });
@@ -263,6 +264,7 @@ test.describe('Task Groups API', () => {
     expect(body.children[0].agentType).toBe('copilot');
     expect(body.children[1].agentType).toBe('claude');
     expect(body.children[2].agentType).toBe('codex');
+    expect(body.children[3].agentType).toBe('oh-my-pi');
   });
 
   test('PATCH /api/groups/:id/archive archives group and children', async ({ request }) => {

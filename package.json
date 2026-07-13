@@ -2,7 +2,7 @@
   "name": "ai-agent-board",
   "private": true,
   "version": "0.1.0",
-  "description": "A drag-and-drop Kanban board that delegates coding tasks to AI agents — GitHub Copilot, Claude Code, OpenAI Codex, OpenCode, Hermes, or OpenClaw.",
+  "description": "A drag-and-drop Kanban board that delegates coding tasks to AI agents — GitHub Copilot, Claude Code, OpenAI Codex, OpenCode, Hermes, OpenClaw, or Oh My Pi.",
   "license": "MIT",
   "author": "Dan Wahlin",
   "repository": {

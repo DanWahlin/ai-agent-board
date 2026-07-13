@@ -7,7 +7,7 @@ import type { Task, TaskGroup, AgentEvent, AgentType } from '../types.js';
 import type { TaskRepository } from '../repositories/types.js';
 import type { AgentProvider, AgentSession, AgentInfo, AgentAttachment } from '@codewithdan/agent-sdk-core';
 import type { AgentEvent as CoreAgentEvent } from '@codewithdan/agent-sdk-core';
-import { CopilotProvider, ClaudeProvider, CodexProvider, OpenCodeProvider, HermesProvider, OpenClawProvider } from '@codewithdan/agent-sdk-core';
+import { CopilotProvider, ClaudeProvider, CodexProvider, OpenCodeProvider, HermesProvider, OpenClawProvider, OhMyPiProvider } from '@codewithdan/agent-sdk-core';
 import { broadcast } from '../websocket.js';
 import { UPLOADS_DIR } from '../routes/attachments.js';
 import type { AttachmentStore } from '../repositories/attachment-types.js';
@@ -129,6 +129,7 @@ export class AgentManager {
     this.providers.set('opencode', new OpenCodeProvider());
     this.providers.set('hermes', new HermesProvider());
     this.providers.set('openclaw', new OpenClawProvider());
+    this.providers.set('oh-my-pi', new OhMyPiProvider());
 
     // Detect which agents are actually available on this system
     this.availableAgents = await detectAvailableAgents();

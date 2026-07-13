@@ -7,6 +7,7 @@ export const AGENT_DISPLAY: Record<AgentType, { emoji: string; label: string }> 
   opencode: { emoji: '', label: 'OpenCode' },
   hermes: { emoji: '', label: 'Hermes' },
   openclaw: { emoji: '', label: 'OpenClaw' },
+  'oh-my-pi': { emoji: '', label: 'Oh My Pi' },
 };
 
 /** Dropdown-friendly array derived from AGENT_DISPLAY */

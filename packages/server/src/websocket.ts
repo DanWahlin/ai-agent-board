@@ -2,12 +2,19 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { Server } from 'http';
 import type { WSMessage } from './types.js';
 import { isValidToken } from './middleware/auth.js';
+import { isAllowedWebSocketRequest, parseList } from './network-policy.js';
 
 interface AliveWebSocket extends WebSocket {
   isAlive: boolean;
 }
 
 let wss: WebSocketServer;
+
+const ALLOWED_HOSTS = parseList(process.env.ALLOWED_HOSTS, 'localhost,127.0.0.1');
+const ALLOWED_ORIGINS = parseList(
+  process.env.ALLOWED_ORIGINS,
+  'http://localhost:8081,http://localhost:4175,http://localhost:4176',
+);
 
 export function createWSS(server: Server): WebSocketServer {
   if (wss) throw new Error('WSS already initialized');
@@ -16,6 +23,12 @@ export function createWSS(server: Server): WebSocketServer {
   // Handle HTTP upgrade — check auth token before accepting
   server.on('upgrade', (req, socket, head) => {
     if (req.url?.startsWith('/ws')) {
+      if (!isAllowedWebSocketRequest(req, ALLOWED_HOSTS, ALLOWED_ORIGINS)) {
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+
       const url = new URL(req.url, `http://${req.headers.host}`);
       const token = url.searchParams.get('token') ?? undefined;
 

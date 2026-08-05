@@ -164,9 +164,10 @@ npm run hooks:install
 | `COPILOT_DENIED_TOOLS` | _(unset)_ | Comma-separated tool names to deny in Copilot sessions |
 | `ALLOWED_REPO_ROOTS` | `$HOME`, temp, current workspace | Allowed repo root paths (comma-separated) |
 | `ALLOWED_ORIGINS` | `http://localhost:8081,http://localhost:4175,http://localhost:4176` | CORS origins |
+| `ALLOWED_HOSTS` | `localhost,127.0.0.1` | Server-side Host allowlist for WebSocket upgrades. Add the trusted reverse-proxy hostname in production. |
 | `AGENT_TIMEOUT_MS` | `600000` | Max agent execution time (ms) |
 | `API_URL` | `http://localhost:8080` | Vite proxy target |
-| `VITE_ALLOWED_HOSTS` | `localhost,127.0.0.1` | Comma-separated Host allowlist for Vite. Add the trusted reverse-proxy hostname in production; never use a wildcard. |
+| `VITE_ALLOWED_HOSTS` | `localhost,127.0.0.1` | Vite HTTP and proxy-upgrade Host allowlist. Loaded from `.env` or the process environment. Add trusted reverse-proxy hostnames; never use a wildcard. |
 | `PROJECTS_DIR` | `~/projects` | Host projects path |
 
 ## Project Structure

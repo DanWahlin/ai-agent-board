@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -b tsconfig.build.json",
-    "test": "node --import tsx/esm --test tests/agent-detection.test.ts",
+    "test": "node --import tsx/esm --test tests/*.test.ts",
     "start": "node dist/index.js"
   },
   "dependencies": {

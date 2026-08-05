@@ -21,6 +21,7 @@ import type { TaskRepository } from './repositories/types.js';
 import type { TemplateRepository } from './repositories/template-types.js';
 import type { TaskGroupRepository } from './repositories/group-types.js';
 import type { ProjectRepository } from './repositories/project-types.js';
+import { isLoopbackAddress } from './network-policy.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '8080', 10);
@@ -174,8 +175,8 @@ const agentManager = new AgentManager();
     } else {
       console.warn('[server] WARNING: No API_KEY set — all endpoints are open without authentication.');
       console.warn('[server] Set the API_KEY environment variable to enable authentication.');
-      if (!['127.0.0.1', '::1', 'localhost'].includes(HOST)) {
-        console.warn(`[server] WARNING: HOST=${HOST} is not loopback while API_KEY is unset.`);
+      if (!isLoopbackAddress(server.address())) {
+        console.warn('[server] WARNING: effective bind address is not loopback while API_KEY is unset.');
       }
     }
   });

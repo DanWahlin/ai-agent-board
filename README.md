@@ -129,6 +129,8 @@ npm run build:server
 npm run build:client
 ```
 
+The current single-host production layout uses `kanban-server.service` on `127.0.0.1:8080`, `kanban-client.service` on `127.0.0.1:8081`, PostgreSQL in the `ai-agent-board-db` Docker container, and a dedicated nginx ingress on `127.0.0.1:18085`. Cloudflare Tunnel targets that nginx ingress, and Cloudflare Access provides user authentication. Do not bind these origins to public or Tailscale interfaces.
+
 ### Required Gate
 
 Use the deterministic gate before pushing changes. It runs the client build, server build, and required Playwright E2E suite; if E2E cannot run, the command fails.
@@ -147,6 +149,7 @@ npm run hooks:install
 | `API_KEY` | _(unset)_ | Bearer token for API + WebSocket auth; unset = open access |
 | `VITE_API_KEY` | _(unset)_ | Client-side API key (must match `API_KEY`) |
 | `PORT` | `8080` | Server port |
+| `HOST` | `127.0.0.1` | Server/client bind address. Keep loopback when exposing the app through a local reverse proxy or Cloudflare Tunnel. |
 | `DATABASE_URL` | _(unset)_ | PostgreSQL connection string; when unset, uses SQLite |
 | `DB_PATH` | `./data/agentboard.db` | SQLite database file path |
 | `COPILOT_MODEL` | `claude-opus-4-20250514` | Model for Copilot SDK sessions |

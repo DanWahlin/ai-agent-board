@@ -59,26 +59,27 @@ The production server (`kanban.codewithdan.com`) runs via two systemd services:
 
 | Service | Unit File | Port | Description |
 |---------|-----------|------|-------------|
-| `ai-agent-board-server` | `/etc/systemd/system/ai-agent-board-server.service` | 3001 | Express API + WebSocket + agent SDKs |
-| `ai-agent-board-client` | `/etc/systemd/system/ai-agent-board-client.service` | 4175 | Vite dev server (proxied by nginx/reverse proxy) |
+| `kanban-server` | `/etc/systemd/system/kanban-server.service` | `127.0.0.1:8080` | Express API + WebSocket + agent SDKs |
+| `kanban-client` | `/etc/systemd/system/kanban-client.service` | `127.0.0.1:8081` | Vite dev server (proxied by nginx) |
+| nginx Kanban ingress | `/etc/nginx/sites-enabled/kanban` | `127.0.0.1:18085` | Loopback-only origin for Cloudflare Tunnel |
 
 ```bash
 # Check status
-systemctl status ai-agent-board-server ai-agent-board-client
+systemctl status kanban-server kanban-client
 
 # Restart after code changes
-systemctl restart ai-agent-board-server ai-agent-board-client
+systemctl restart kanban-server kanban-client
 
 # View logs
-journalctl -u ai-agent-board-server -f
-journalctl -u ai-agent-board-client -f
+journalctl -u kanban-server -f
+journalctl -u kanban-client -f
 
 # Restart just one
-systemctl restart ai-agent-board-server
-systemctl restart ai-agent-board-client
+systemctl restart kanban-server
+systemctl restart kanban-client
 ```
 
-**Important:** The server reads `packages/server/.env` via dotenv. Production uses PostgreSQL via the `ai-agent-board-db` Docker container (postgres:16-alpine on port 5433). DB credentials: `user=agentboard, db=agentboard`. If the password needs resetting: `docker exec ai-agent-board-db psql -U agentboard -c "ALTER USER agentboard WITH PASSWORD '<pass>'"`. Do **not** fall back to SQLite in production.
+**Important:** The server reads `packages/server/.env` via dotenv. Production uses PostgreSQL via the `ai-agent-board-db` Docker container (postgres:16-alpine on port 5433). Do **not** fall back to SQLite in production. Keep the server, client, and dedicated nginx ingress bound to loopback; Cloudflare Access is the user-authentication boundary and Cloudflare Tunnel is the only intended ingress path.
 
 ## Build
 
@@ -95,6 +96,7 @@ npm run build:server   # tsc -b tsconfig.build.json
 | `API_KEY` | _(none)_ | Bearer token for API + WebSocket auth; unset = open access |
 | `VITE_API_KEY` | _(none)_ | Client-side API key (must match `API_KEY`) |
 | `PORT` | `3001` | Server port |
+| `HOST` | `127.0.0.1` | Server/client bind address. Keep loopback for the production reverse-proxy deployment. |
 | `DATABASE_URL` | _(none)_ | PostgreSQL connection string; when unset, uses SQLite |
 | `DB_PATH` | `./data/agentboard.db` | SQLite database file path |
 | `COPILOT_MODEL` | `claude-opus-4-20250514` | Model for Copilot SDK sessions |

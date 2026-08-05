@@ -24,6 +24,7 @@ import type { ProjectRepository } from './repositories/project-types.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '8080', 10);
+const HOST = process.env.HOST?.trim() || '127.0.0.1';
 
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:8081,http://localhost:4175,http://localhost:4176').split(',');
 app.use(cors({ origin: ALLOWED_ORIGINS }));
@@ -165,9 +166,9 @@ const agentManager = new AgentManager();
     console.warn(`[server] recovered orphaned task ${task.id} "${task.title}" (was ${task.agentStatus})`);
   }
 
-  server.listen(PORT, () => {
-    console.log(`[server] listening on http://localhost:${PORT}`);
-    console.log(`[server] WebSocket at ws://localhost:${PORT}/ws`);
+  server.listen(PORT, HOST, () => {
+    console.log(`[server] listening on http://${HOST}:${PORT}`);
+    console.log(`[server] WebSocket at ws://${HOST}:${PORT}/ws`);
     if (process.env.API_KEY) {
       console.log('[server] API key authentication enabled');
     } else {

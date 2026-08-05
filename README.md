@@ -166,6 +166,7 @@ npm run hooks:install
 | `ALLOWED_ORIGINS` | `http://localhost:8081,http://localhost:4175,http://localhost:4176` | CORS origins |
 | `AGENT_TIMEOUT_MS` | `600000` | Max agent execution time (ms) |
 | `API_URL` | `http://localhost:8080` | Vite proxy target |
+| `VITE_ALLOWED_HOSTS` | `localhost,127.0.0.1` | Comma-separated Host allowlist for Vite. Add the trusted reverse-proxy hostname in production; never use a wildcard. |
 | `PROJECTS_DIR` | `~/projects` | Host projects path |
 
 ## Project Structure

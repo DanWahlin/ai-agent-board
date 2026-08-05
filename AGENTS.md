@@ -49,8 +49,8 @@ ai-agent-board/
 
 ```bash
 npm install
-npm run dev:server   # Terminal 1 — port 3001
-npm run dev:client   # Terminal 2 — port 4175
+npm run dev:server   # Terminal 1 — port 8080
+npm run dev:client   # Terminal 2 — port 8081
 ```
 
 ## Production (systemd)
@@ -95,7 +95,7 @@ npm run build:server   # tsc -b tsconfig.build.json
 |----------|---------|-------------|
 | `API_KEY` | _(none)_ | Bearer token for API + WebSocket auth; unset = open access |
 | `VITE_API_KEY` | _(none)_ | Client-side API key (must match `API_KEY`) |
-| `PORT` | `3001` | Server port |
+| `PORT` | `8080` | Server port |
 | `HOST` | `127.0.0.1` | Server/client bind address. Keep loopback for the production reverse-proxy deployment. |
 | `DATABASE_URL` | _(none)_ | PostgreSQL connection string; when unset, uses SQLite |
 | `DB_PATH` | `./data/agentboard.db` | SQLite database file path |
@@ -107,9 +107,10 @@ npm run build:server   # tsc -b tsconfig.build.json
 | `OPENCLAW_GATEWAY_URL` | _(none)_ | Optional OpenClaw Gateway WebSocket URL forwarded to `openclaw acp` |
 | `COPILOT_DENIED_TOOLS` | _(none)_ | Comma-separated tool names to deny in Copilot sessions |
 | `ALLOWED_REPO_ROOTS` | `$HOME`, temp, current workspace | Comma-separated allowed repo root paths (security whitelist) |
-| `ALLOWED_ORIGINS` | `http://localhost:4175,http://localhost:4176` | CORS origins |
+| `ALLOWED_ORIGINS` | `http://localhost:8081,http://localhost:4175,http://localhost:4176` | CORS origins |
 | `AGENT_TIMEOUT_MS` | `600000` (10 min) | Max agent execution time |
-| `API_URL` | `http://localhost:3001` | Vite proxy target |
+| `API_URL` | `http://localhost:8080` | Vite proxy target |
+| `VITE_ALLOWED_HOSTS` | `localhost,127.0.0.1` | Comma-separated Host allowlist for Vite. Add the trusted reverse-proxy hostname in production. Never use a wildcard. |
 | `PROJECTS_DIR` | `~/projects` | Host projects path |
 
 ## Tests

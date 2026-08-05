@@ -174,6 +174,9 @@ const agentManager = new AgentManager();
     } else {
       console.warn('[server] WARNING: No API_KEY set — all endpoints are open without authentication.');
       console.warn('[server] Set the API_KEY environment variable to enable authentication.');
+      if (!['127.0.0.1', '::1', 'localhost'].includes(HOST)) {
+        console.warn(`[server] WARNING: HOST=${HOST} is not loopback while API_KEY is unset.`);
+      }
     }
   });
 

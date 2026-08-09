@@ -39,6 +39,21 @@ test.describe('Templates CRUD', () => {
     expect(template.createdAt).toBeGreaterThan(0);
   });
 
+  test('POST /api/templates accepts Oh My Pi agent type', async ({ request }) => {
+    const res = await request.post(`${API}/api/templates`, {
+      data: {
+        name: 'Oh My Pi Template',
+        title: 'Use Oh My Pi',
+        agentType: 'oh-my-pi',
+      },
+    });
+    expect(res.status()).toBe(201);
+    const template = await res.json();
+    createdIds.push(template.id);
+
+    expect(template.agentType).toBe('oh-my-pi');
+  });
+
   test('GET /api/templates lists all templates', async ({ request }) => {
     // Create two templates
     const r1 = await request.post(`${API}/api/templates`, {

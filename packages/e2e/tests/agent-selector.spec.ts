@@ -8,9 +8,14 @@ const AGENT_LABELS: Record<string, string> = {
   opencode: 'OpenCode',
   hermes: 'Hermes',
   openclaw: 'OpenClaw',
+  'oh-my-pi': 'Oh My Pi',
 };
 
 const AGENT_LABEL_ORDER = Object.values(AGENT_LABELS);
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 async function getPreferredAgent(request: any): Promise<{ name: string; label: string; hasAvailableAgent: boolean }> {
   const res = await request.get(`${API}/api/agents`);
@@ -110,6 +115,7 @@ test.describe('Agent Selector in TaskDialog', () => {
     for (const [index, label] of AGENT_LABEL_ORDER.entries()) {
       await expect(dropdownOptions.nth(index)).toContainText(label);
     }
+    await expect(dropdownOptions.filter({ hasText: 'Oh My Pi' })).toHaveCount(1);
   });
 
   test('clicking an available agent option selects it', async ({ page, request }) => {
@@ -210,7 +216,8 @@ test.describe('Agent Type Badge on Task Cards', () => {
     // The agent badge (emoji + label) should NOT be present on backlog cards
     // TaskCard renders: agentBadgeMap[task.agentType].emoji + " " + agentBadgeMap[task.agentType].label
     // Only shown when task.columnId !== 'backlog'
-    const agentBadge = card.locator('span').filter({ hasText: /^.+\s(Copilot|Claude|Codex|OpenCode|Hermes)$/ });
+    const agentBadgePattern = new RegExp(`^\\s*(${AGENT_LABEL_ORDER.map(escapeRegExp).join('|')})$`);
+    const agentBadge = card.locator('span').filter({ hasText: agentBadgePattern });
     await expect(agentBadge).toHaveCount(0);
   });
 });

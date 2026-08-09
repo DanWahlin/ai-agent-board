@@ -15,7 +15,7 @@
 
 # AI Agent Board
 
-A drag-and-drop Kanban board that delegates coding tasks to AI agents — GitHub Copilot, Claude Code, OpenAI Codex, OpenCode, Hermes, or OpenClaw. Drop a task into "In Progress," pick an agent, and it will plan, execute, and complete the work, streaming live progress back to the board.
+A drag-and-drop Kanban board that delegates coding tasks to AI agents — GitHub Copilot, Claude Code, OpenAI Codex, OpenCode, Hermes, OpenClaw, or Oh My Pi. Drop a task into "In Progress," pick an agent, and it will plan, execute, and complete the work, streaming live progress back to the board.
 
 ![AI Agent Board in action](images/agent-board-in-action.gif)
 
@@ -36,7 +36,7 @@ The server uses a **provider pattern** (via [`@codewithdan/agent-sdk-core`](http
 - **`AgentSession`** — runs a task, emits events, supports abort
 - **`AgentManager`** — orchestrates sessions with timeouts, event caching, and graceful cleanup
 
-Each task can specify which agent to use. Available agents are auto-detected at startup by checking for installed CLIs. Six providers are supported: Copilot, Claude Code, Codex, OpenCode, Hermes, and OpenClaw. Events from all providers are normalized into a common `AgentEvent` format and streamed to the UI via WebSocket.
+Each task can specify which agent to use. Available agents are auto-detected at startup by checking for installed CLIs. Seven providers are supported: Copilot, Claude Code, Codex, OpenCode, Hermes, OpenClaw, and Oh My Pi. Events from all providers are normalized into a common `AgentEvent` format and streamed to the UI via WebSocket.
 
 ### Task Groups
 
@@ -87,6 +87,7 @@ Groups appear as a single card on the board showing aggregate progress. Click to
   - **OpenCode**: CLI installed and authenticated
   - **Hermes**: Hermes Agent installed and `hermes acp --check` succeeds
   - **OpenClaw**: OpenClaw CLI installed and Gateway/session access configured
+  - **Oh My Pi**: install/authenticate OMP and confirm `omp --version` works; OMP ACP is started with `omp acp`. Install via `curl -fsSL https://omp.sh/install | sh`, `brew install can1357/tap/omp`, or `bun install -g @oh-my-pi/pi-coding-agent` (Bun `>=1.3.14` for npm installs).
 
 Works on **Linux**, **macOS**, and **Windows**.
 
@@ -161,6 +162,9 @@ npm run hooks:install
 | `OPENCLAW_COMMAND` | `openclaw` | OpenClaw CLI command or absolute path used to start the ACP bridge |
 | `OPENCLAW_GATEWAY_URL` | _(SDK default)_ | Optional OpenClaw Gateway WebSocket URL forwarded to `openclaw acp` |
 | `OPENCLAW_GATEWAY_TOKEN` / `OPENCLAW_GATEWAY_PASSWORD` | _(unset)_ | Optional OpenClaw Gateway credentials passed through environment variables |
+| `OH_MY_PI_COMMAND` | `omp` | Oh My Pi CLI command or absolute path used to start the ACP server |
+| `OH_MY_PI_MODEL` | `configured default` | Model passed to `omp acp --model`; unset uses OMP config/default selection |
+| `OH_MY_PI_EXTRA_ARGS` | _(unset)_ | Additional whitespace-delimited args appended to `omp acp` before `--model`; no shell evaluation |
 | `COPILOT_DENIED_TOOLS` | _(unset)_ | Comma-separated tool names to deny in Copilot sessions |
 | `ALLOWED_REPO_ROOTS` | `$HOME`, temp, current workspace | Allowed repo root paths (comma-separated) |
 | `ALLOWED_ORIGINS` | `http://localhost:8081,http://localhost:4175,http://localhost:4176` | CORS origins |

@@ -4,6 +4,7 @@ export interface ProjectRepository {
   getAllWithCounts(): Promise<Project[]>;
   getById(id: string): Promise<Project | undefined>;
   getDefault(): Promise<Project | undefined>;
+  resolve(reference: string): Promise<Project[]>;
   create(input: {
     id: string;
     name: string;
@@ -13,6 +14,7 @@ export interface ProjectRepository {
     defaultPriority?: Priority;
     defaultBaseBranch?: string;
     defaultUseWorktree?: boolean;
+    aliases?: string[];
     createdAt: number;
     updatedAt: number;
   }): Promise<Project>;
@@ -24,6 +26,7 @@ export interface ProjectRepository {
     defaultPriority?: Priority | null;
     defaultBaseBranch?: string | null;
     defaultUseWorktree?: boolean | null;
+    aliases?: string[];
     updatedAt: number;
   }): Promise<Project | undefined>;
   hasTasksOrGroups(id: string): Promise<boolean>;

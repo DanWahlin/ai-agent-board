@@ -7,7 +7,7 @@ import type { Task, TaskGroup, AgentEvent, AgentType } from '../types.js';
 import type { TaskRepository } from '../repositories/types.js';
 import type { AgentProvider, AgentSession, AgentInfo, AgentAttachment } from '@codewithdan/agent-sdk-core';
 import type { AgentEvent as CoreAgentEvent } from '@codewithdan/agent-sdk-core';
-import { CopilotProvider, ClaudeProvider, CodexProvider, OpenCodeProvider, HermesProvider, OpenClawProvider } from '@codewithdan/agent-sdk-core';
+import { CopilotProvider, ClaudeProvider, CodexProvider, OpenCodeProvider, HermesProvider, OpenClawProvider, GrokProvider } from '@codewithdan/agent-sdk-core';
 import { broadcast } from '../websocket.js';
 import { UPLOADS_DIR } from '../routes/attachments.js';
 import type { AttachmentStore } from '../repositories/attachment-types.js';
@@ -129,6 +129,7 @@ export class AgentManager {
     this.providers.set('opencode', new OpenCodeProvider());
     this.providers.set('hermes', new HermesProvider());
     this.providers.set('openclaw', new OpenClawProvider());
+    this.providers.set('grok', new GrokProvider());
 
     // Detect which agents are actually available on this system
     this.availableAgents = await detectAvailableAgents();
@@ -178,6 +179,24 @@ export class AgentManager {
         }
       }
     }
+  }
+
+  async refresh(): Promise<AgentInfo[]> {
+    const detected = await detectAvailableAgents();
+    for (const info of detected) {
+      const provider = this.providers.get(info.name);
+      if (!info.available || !provider) continue;
+      const wasAvailable = this.availableAgents.find((item) => item.name === info.name)?.available;
+      if (wasAvailable) continue;
+      try {
+        await provider.start();
+      } catch (err: unknown) {
+        info.available = false;
+        info.reason = `Failed to start: ${errorMessage(err)}`;
+      }
+    }
+    this.availableAgents = detected;
+    return this.getAvailableAgents();
   }
 
   getAvailableAgents(): AgentInfo[] {
@@ -299,7 +318,9 @@ export class AgentManager {
   }
 
   setupWorktree(task: Task): string | undefined {
-    if (!task.useWorktree || !task.repoPath || !task.branchName) return undefined;
+    if (!task.useWorktree) return undefined;
+    if (!task.repoPath) throw new Error('Worktree tasks require repoPath');
+    if (!task.branchName) throw new Error('Worktree tasks require branchName');
 
     // Reuse a valid worktree left over from a prior run (e.g. after a failed
     // attempt). Without this, a restart would mint a new temp dir and fail with

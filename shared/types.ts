@@ -1,7 +1,7 @@
 export type Priority = 'low' | 'medium' | 'high' | 'critical';
 export type ColumnId = 'backlog' | 'in-progress' | 'review' | 'done';
 export type AgentStatus = 'idle' | 'planning' | 'executing' | 'complete' | 'failed';
-export type AgentType = 'copilot' | 'claude' | 'codex' | 'opencode' | 'hermes' | 'openclaw';
+export type AgentType = 'copilot' | 'claude' | 'codex' | 'opencode' | 'hermes' | 'openclaw' | 'grok';
 
 export interface AgentInfo {
   name: AgentType;
@@ -33,6 +33,20 @@ export interface Task {
   attachments?: TaskAttachment[];
   projectId: string;
   summary?: string | null;
+  runRequestedAt?: number;
+  runClaimedAt?: number;
+  externalSource?: string;
+  externalKey?: string;
+  provenance?: TaskProvenance;
+}
+
+export interface TaskProvenance {
+  sourceProfile?: string;
+  sourcePlatform?: string;
+  sourceSession?: string;
+  sourceMessage?: string;
+  requestedBy?: string;
+  origin?: Record<string, string | number | boolean | null>;
 }
 
 export interface TaskGroup {
@@ -74,6 +88,7 @@ export interface Project {
   defaultPriority?: Priority;
   defaultBaseBranch?: string;
   defaultUseWorktree?: boolean;
+  aliases?: string[];
 }
 
 export interface CreateProjectRequest {
@@ -85,6 +100,7 @@ export interface CreateProjectRequest {
   defaultPriority?: Priority;
   defaultBaseBranch?: string;
   defaultUseWorktree?: boolean;
+  aliases?: string[];
 }
 
 export interface UpdateProjectRequest {
@@ -95,6 +111,7 @@ export interface UpdateProjectRequest {
   defaultPriority?: Priority | null;
   defaultBaseBranch?: string | null;
   defaultUseWorktree?: boolean | null;
+  aliases?: string[];
 }
 
 /** Server-side Agent Board configuration (persisted to the config file). */

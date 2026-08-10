@@ -46,6 +46,7 @@ function migrate(db: Database.Database): void {
   if (!projectColNames.has('repo_url')) {
     db.exec(`ALTER TABLE projects ADD COLUMN repo_url TEXT`);
   }
+  if (!projectColNames.has('aliases')) db.exec(`ALTER TABLE projects ADD COLUMN aliases TEXT NOT NULL DEFAULT '[]'`);
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS tasks (
@@ -141,6 +142,12 @@ function migrate(db: Database.Database): void {
   if (!colNames.has('summary')) {
     db.exec(`ALTER TABLE tasks ADD COLUMN summary TEXT`);
   }
+  if (!colNames.has('external_source')) db.exec(`ALTER TABLE tasks ADD COLUMN external_source TEXT`);
+  if (!colNames.has('external_key')) db.exec(`ALTER TABLE tasks ADD COLUMN external_key TEXT`);
+  if (!colNames.has('provenance')) db.exec(`ALTER TABLE tasks ADD COLUMN provenance TEXT`);
+  if (!colNames.has('run_requested_at')) db.exec(`ALTER TABLE tasks ADD COLUMN run_requested_at INTEGER`);
+  if (!colNames.has('run_claimed_at')) db.exec(`ALTER TABLE tasks ADD COLUMN run_claimed_at INTEGER`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_external_identity ON tasks(external_source, external_key) WHERE external_source IS NOT NULL AND external_key IS NOT NULL`);
 
   // Task groups table
   db.exec(`
@@ -290,6 +297,11 @@ function ensureSqliteProjectForeignKeys(db: Database.Database): void {
         group_id      TEXT,
         group_order   INTEGER,
         summary       TEXT,
+        external_source TEXT,
+        external_key TEXT,
+        provenance TEXT,
+        run_requested_at INTEGER,
+        run_claimed_at INTEGER,
         FOREIGN KEY (project_id) REFERENCES projects(id),
         FOREIGN KEY (group_id) REFERENCES task_groups(id) ON DELETE CASCADE
       );
@@ -297,12 +309,14 @@ function ensureSqliteProjectForeignKeys(db: Database.Database): void {
       INSERT INTO tasks_new (
         id, title, description, priority, column_id, agent_status, created_at,
         started_at, completed_at, repo_path, branch_name, base_branch, use_worktree,
-        worktree_path, agent_type, archived, project_id, group_id, group_order, summary
+        worktree_path, agent_type, archived, project_id, group_id, group_order, summary,
+        external_source, external_key, provenance, run_requested_at, run_claimed_at
       )
       SELECT
         id, title, description, priority, column_id, agent_status, created_at,
         started_at, completed_at, repo_path, branch_name, base_branch, use_worktree,
-        worktree_path, agent_type, archived, project_id, group_id, group_order, summary
+        worktree_path, agent_type, archived, project_id, group_id, group_order, summary,
+        external_source, external_key, provenance, run_requested_at, run_claimed_at
       FROM tasks;
 
       DROP TABLE tasks;
@@ -374,6 +388,7 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
   await addProjectCol('default_base_branch', 'TEXT');
   await addProjectCol('default_use_worktree', 'BOOLEAN');
   await addProjectCol('repo_url', 'TEXT');
+  await addProjectCol('aliases', "TEXT NOT NULL DEFAULT '[]'");
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS tasks (
@@ -418,6 +433,12 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
   await addCol('group_id', 'TEXT');
   await addCol('group_order', 'INTEGER');
   await addCol('summary', 'TEXT');
+  await addCol('external_source', 'TEXT');
+  await addCol('external_key', 'TEXT');
+  await addCol('provenance', 'TEXT');
+  await addCol('run_requested_at', 'BIGINT');
+  await addCol('run_claimed_at', 'BIGINT');
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_external_identity ON tasks(external_source, external_key) WHERE external_source IS NOT NULL AND external_key IS NOT NULL`);
 
   // Task groups table
   await pool.query(`

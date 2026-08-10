@@ -1,29 +1,62 @@
 import type { Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 
-const API_KEY = process.env.API_KEY;
+export type ServiceScope = 'projects:read' | 'agents:read' | 'orchestrations:create' | 'orchestrations:read' | 'orchestrations:message';
+const ALL_SERVICE_SCOPES: ServiceScope[] = ['projects:read', 'agents:read', 'orchestrations:create', 'orchestrations:read', 'orchestrations:message'];
 
-/**
- * Bearer-token auth middleware. When API_KEY env var is set, all requests
- * must include `Authorization: Bearer <key>`. When unset, auth is skipped
- * so the app works zero-config for local development.
- */
+interface Credential { token?: string; sha256?: string; scopes: ServiceScope[] }
+
+function credentials(): Credential[] {
+  const raw = process.env.SERVICE_TOKENS;
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as Array<{ token?: string; sha256?: string; scopes?: string[] }>;
+    return parsed.filter(c => c.token || c.sha256).map(c => ({ token: c.token, sha256: c.sha256?.toLowerCase(), scopes: (c.scopes ?? []).filter(s => ALL_SERVICE_SCOPES.includes(s as ServiceScope)) as ServiceScope[] }));
+  } catch { console.error('[auth] SERVICE_TOKENS must be a JSON array'); return []; }
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const aa=Buffer.from(a), bb=Buffer.from(b); return aa.length === bb.length && crypto.timingSafeEqual(aa,bb);
+}
+
+export function authenticateToken(token: string | undefined): { authenticated: boolean; legacy: boolean; scopes: ServiceScope[] } {
+  if (!token) return { authenticated: false, legacy: false, scopes: [] };
+  const apiKey=process.env.API_KEY;
+  if (apiKey && safeEqual(token,apiKey)) return { authenticated:true,legacy:true,scopes:ALL_SERVICE_SCOPES };
+  const digest=crypto.createHash('sha256').update(token).digest('hex');
+  const match=credentials().find(c => c.token ? safeEqual(token,c.token) : !!c.sha256 && safeEqual(digest,c.sha256));
+  return match ? { authenticated:true,legacy:false,scopes:match.scopes } : { authenticated:false,legacy:false,scopes:[] };
+}
+
+function requiredScope(req: Request): ServiceScope | undefined {
+  const p=req.path, method=req.method;
+  if (p === '/health') return undefined;
+  if (p === '/agents' || p === '/agents/refresh') return 'agents:read';
+  if (p.startsWith('/projects')) return method === 'GET' ? 'projects:read' : undefined;
+  if (p === '/orchestrations' && method === 'POST') return 'orchestrations:create';
+  if (/^\/orchestrations\/[^/]+$/.test(p) && method === 'GET') return 'orchestrations:read';
+  if (/^\/orchestrations\/[^/]+\/message$/.test(p) && method === 'POST') return 'orchestrations:message';
+  if (p.startsWith('/tasks') || p.startsWith('/groups')) {
+    return undefined;
+  }
+  return undefined; // service credentials are denied for all non-allowlisted mutations
+}
+
 export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
-  if (!API_KEY) {
-    next();
-    return;
+  const configured=!!process.env.API_KEY || credentials().length>0;
+  if (!configured) { next(); return; }
+  const header=req.headers.authorization;
+  const auth=authenticateToken(header?.startsWith('Bearer ') ? header.slice(7) : undefined);
+  if (!auth.authenticated) { res.status(401).json({error:'unauthorized'}); return; }
+  if (!auth.legacy) {
+    const scope=requiredScope(req);
+    if (!scope || !auth.scopes.includes(scope)) { res.status(403).json({error:'forbidden'}); return; }
   }
-
-  const header = req.headers.authorization;
-  if (!header || !header.startsWith('Bearer ') || header.slice(7) !== API_KEY) {
-    res.status(401).json({ error: 'unauthorized' });
-    return;
-  }
-
   next();
 }
 
-/** Check whether a raw token string matches the configured API_KEY. */
 export function isValidToken(token: string | undefined): boolean {
-  if (!API_KEY) return true;
-  return token === API_KEY;
+  if (!process.env.API_KEY && credentials().length===0) return true;
+  const auth = authenticateToken(token);
+  return auth.authenticated && auth.legacy;
 }

@@ -147,11 +147,26 @@ npm run hooks:install
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `API_KEY` | _(unset)_ | Bearer token for API + WebSocket auth; unset = open access |
+| `SERVICE_TOKENS` | _(unset)_ | JSON array of scoped service credentials (`token` or preferred `sha256`) for integrations |
 | `VITE_API_KEY` | _(unset)_ | Client-side API key (must match `API_KEY`) |
 | `PORT` | `8080` | Server port |
 | `HOST` | `127.0.0.1` | Server/client bind address. Keep loopback when exposing the app through a local reverse proxy or Cloudflare Tunnel. |
 | `DATABASE_URL` | _(unset)_ | PostgreSQL connection string; when unset, uses SQLite |
 | `DB_PATH` | `./data/agentboard.db` | SQLite database file path |
+
+### Orchestration integrations
+
+`POST /api/orchestrations` is the stable integration facade. It requires an
+`Idempotency-Key`, an exact project id/name/alias, and a ready agent. It creates
+the task and durably requests execution; replay returns the original task with
+`Idempotent-Replay: true`. Project aliases are managed through the project
+create/update APIs. Task links use `/projects/:projectId/tasks/:taskId` and open
+the task panel directly.
+
+Service credentials are intentionally limited to these scopes:
+`projects:read`, `agents:read`, `tasks:create`, `tasks:read`, `tasks:message`, and
+`groups:create`. They cannot merge, create PRs, delete resources, or mutate
+projects. `API_KEY` remains the legacy full-access credential for the UI.
 | `COPILOT_MODEL` | `claude-opus-4-20250514` | Model for Copilot SDK sessions |
 | `CLAUDE_MODEL` | `claude-opus-4-20250514` | Model for Claude Code sessions |
 | `CODEX_MODEL` | `gpt-5.2-codex` | Model for OpenAI Codex sessions |

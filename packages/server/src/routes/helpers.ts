@@ -535,7 +535,7 @@ export function buildTask(body: Record<string, any>): Task {
     repoPath: typeof repoPath === 'string' ? expandTilde(repoPath) : undefined,
     branchName: branchName || undefined,
     baseBranch: baseBranch || undefined,
-    useWorktree: useWorktree ?? undefined,
+    useWorktree: useWorktree ?? undefined, externalSource: body.externalSource, externalKey: body.externalKey, provenance: body.provenance, runRequestedAt: body.runRequestedAt,
   };
 }
 
@@ -565,6 +565,9 @@ export async function startAgentForTask(
   repo: TaskRepository,
   agentManager: AgentManager,
 ): Promise<void> {
+  const claimed = await repo.claimRun(task.id, Date.now());
+  if (!claimed) return;
+  task = claimed;
   const updates: Partial<Task> = {
     agentStatus: 'planning',
     startedAt: Date.now(),
@@ -576,6 +579,14 @@ export async function startAgentForTask(
   const updated = await repo.update(task.id, updates);
   if (updated) {
     broadcastTaskUpdate(updated);
-    agentManager.startAgent(updated, makeStatusCallback(repo, task.id), makeWorktreeCallback(repo, task.id));
+    const onStatusChange = makeStatusCallback(repo, task.id);
+    agentManager.startAgent(
+      updated,
+      async (status) => {
+        if (status === 'complete' || status === 'failed') await repo.clearRun(task.id);
+        await onStatusChange(status);
+      },
+      makeWorktreeCallback(repo, task.id),
+    );
   }
 }

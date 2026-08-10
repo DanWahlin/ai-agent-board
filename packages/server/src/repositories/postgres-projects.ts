@@ -14,6 +14,7 @@ interface ProjectRow {
   default_priority: string | null;
   default_base_branch: string | null;
   default_use_worktree: boolean | null;
+  aliases: string;
 }
 
 interface CountRow {
@@ -38,6 +39,7 @@ function rowToProject(row: ProjectRow, taskCounts?: ProjectTaskCounts): Project 
     defaultPriority: (row.default_priority ?? undefined) as Priority | undefined,
     defaultBaseBranch: row.default_base_branch ?? undefined,
     defaultUseWorktree: row.default_use_worktree === null ? undefined : row.default_use_worktree,
+    aliases: JSON.parse(row.aliases || '[]'),
     ...(taskCounts ? { taskCounts } : {}),
   };
 }
@@ -59,6 +61,21 @@ export class PostgresProjectRepository implements ProjectRepository {
     return this.getById('default');
   }
 
+  async resolve(reference: string): Promise<Project[]> {
+    const needle = reference.trim().toLowerCase();
+    const { rows } = await this.pool.query<ProjectRow>('SELECT * FROM projects');
+    const exactId = rows.find((row) => row.id.toLowerCase() === needle);
+    if (exactId) return [rowToProject(exactId, await this.getCounts(exactId.id))];
+    const matches = rows.filter((row) => {
+      const aliases = JSON.parse(row.aliases || '[]') as string[];
+      return row.name.toLowerCase() === needle
+        || aliases.some((alias) => alias.toLowerCase() === needle)
+        || row.repo_path?.toLowerCase() === needle
+        || row.repo_url?.replace(/\.git$/i, '').toLowerCase() === needle.replace(/\.git$/i, '');
+    });
+    return Promise.all(matches.map(async (row) => rowToProject(row, await this.getCounts(row.id))));
+  }
+
   async create(input: {
     id: string;
     name: string;
@@ -68,6 +85,7 @@ export class PostgresProjectRepository implements ProjectRepository {
     defaultPriority?: Priority;
     defaultBaseBranch?: string;
     defaultUseWorktree?: boolean;
+    aliases?: string[];
     createdAt: number;
     updatedAt: number;
   }): Promise<Project> {
@@ -76,8 +94,8 @@ export class PostgresProjectRepository implements ProjectRepository {
       await client.query('BEGIN');
       const { rows } = await client.query<ProjectRow>(
         `INSERT INTO projects (id, name, repo_path, repo_url, is_default, created_at, updated_at,
-           default_agent_type, default_priority, default_base_branch, default_use_worktree)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+           default_agent_type, default_priority, default_base_branch, default_use_worktree, aliases)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          RETURNING *`,
         [
           input.id,
@@ -90,7 +108,7 @@ export class PostgresProjectRepository implements ProjectRepository {
           input.defaultAgentType ?? null,
           input.defaultPriority ?? null,
           input.defaultBaseBranch ?? null,
-          input.defaultUseWorktree ?? null,
+          input.defaultUseWorktree ?? null, JSON.stringify(input.aliases ?? []),
         ],
       );
       await client.query('COMMIT');
@@ -111,6 +129,7 @@ export class PostgresProjectRepository implements ProjectRepository {
     defaultPriority?: Priority | null;
     defaultBaseBranch?: string | null;
     defaultUseWorktree?: boolean | null;
+    aliases?: string[];
     updatedAt: number;
   }): Promise<Project | undefined> {
     const client = await this.pool.connect();
@@ -125,8 +144,8 @@ export class PostgresProjectRepository implements ProjectRepository {
       const { rows: updatedRows } = await client.query<ProjectRow>(
         `UPDATE projects
          SET name = $1, repo_path = $2, repo_url = $3, is_default = $4, updated_at = $5,
-           default_agent_type = $6, default_priority = $7, default_base_branch = $8, default_use_worktree = $9
-         WHERE id = $10
+           default_agent_type = $6, default_priority = $7, default_base_branch = $8, default_use_worktree = $9, aliases=$10
+         WHERE id = $11
          RETURNING *`,
         [
           updates.name ?? existing.name,
@@ -137,7 +156,7 @@ export class PostgresProjectRepository implements ProjectRepository {
           updates.defaultAgentType === undefined ? existing.default_agent_type : updates.defaultAgentType,
           updates.defaultPriority === undefined ? existing.default_priority : updates.defaultPriority,
           updates.defaultBaseBranch === undefined ? existing.default_base_branch : updates.defaultBaseBranch,
-          updates.defaultUseWorktree === undefined ? existing.default_use_worktree : updates.defaultUseWorktree,
+          updates.defaultUseWorktree === undefined ? existing.default_use_worktree : updates.defaultUseWorktree, updates.aliases === undefined ? existing.aliases : JSON.stringify(updates.aliases),
           id,
         ],
       );

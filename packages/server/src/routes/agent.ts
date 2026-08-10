@@ -118,8 +118,11 @@ export function createAgentRouter(
       return;
     }
 
-    // Clear old events from any previous run
+    // Persist intent before claiming; a crash between these operations is recovered at startup.
     agentManager.resetEvents(task.id);
+    await repo.requestRun(task.id, Date.now());
+    const claimed = await repo.claimRun(task.id, Date.now());
+    if (!claimed) { res.status(409).json({ error: 'run already claimed' }); return; }
 
     const updates: Partial<Task> = {
       agentStatus: 'planning',

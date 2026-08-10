@@ -249,6 +249,8 @@ export function createProjectsRouter(
 
   router.post('/', asyncHandler(async (req: Request, res: Response) => {
     const { name, repoPath, repoUrl } = req.body;
+    const aliases = parseAliases(req.body.aliases);
+    if (typeof aliases === 'string') { res.status(400).json({ error: aliases }); return; }
     const projectName = typeof name === 'string' ? name.trim() : undefined;
     const hasRepoUrl = typeof repoUrl === 'string' && repoUrl.trim().length > 0;
 
@@ -309,7 +311,7 @@ export function createProjectsRouter(
       defaultAgentType: defaults.defaultAgentType ?? undefined,
       defaultPriority: defaults.defaultPriority ?? undefined,
       defaultBaseBranch: defaults.defaultBaseBranch ?? undefined,
-      defaultUseWorktree: defaults.defaultUseWorktree ?? undefined,
+      defaultUseWorktree: defaults.defaultUseWorktree ?? undefined, aliases,
       createdAt: now,
       updatedAt: now,
     });
@@ -333,6 +335,7 @@ export function createProjectsRouter(
       defaultPriority?: Priority | null;
       defaultBaseBranch?: string | null;
       defaultUseWorktree?: boolean | null;
+      aliases?: string[];
       updatedAt: number;
     } = {
       updatedAt: Date.now(),
@@ -398,6 +401,7 @@ export function createProjectsRouter(
     const parsedDefaults = parseProjectDefaults(req.body, true);
     if (typeof parsedDefaults === 'string') { res.status(400).json({ error: parsedDefaults }); return; }
     Object.assign(updates, parsedDefaults);
+    if (req.body.aliases !== undefined) { const aliases=parseAliases(req.body.aliases); if (typeof aliases === 'string') { res.status(400).json({error:aliases}); return; } updates.aliases=aliases; }
 
     const updated = await projectRepo.update(id, updates);
     if (!updated) { res.status(404).json({ error: 'project not found' }); return; }
@@ -442,6 +446,13 @@ export function createProjectsRouter(
   }));
 
   return router;
+}
+
+function parseAliases(value: unknown): string[] | string {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.some(v => typeof v !== 'string' || !v.trim())) return 'aliases must be an array of non-empty strings';
+  const normalized=[...new Set(value.map(v => v.trim().toLowerCase()))];
+  return normalized.length > 20 ? 'aliases cannot contain more than 20 values' : normalized;
 }
 
 function isRepoPathChange(existing: string | undefined, next: string | null): boolean {

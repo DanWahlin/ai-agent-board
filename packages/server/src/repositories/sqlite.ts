@@ -24,6 +24,8 @@ interface TaskRow {
   group_id: string | null;
   group_order: number | null;
   summary: string | null;
+  external_source: string | null; external_key: string | null; provenance: string | null;
+  run_requested_at: number | null; run_claimed_at: number | null;
 }
 
 function rowToTask(row: TaskRow): Task {
@@ -48,6 +50,9 @@ function rowToTask(row: TaskRow): Task {
     groupId: row.group_id ?? undefined,
     groupOrder: row.group_order ?? undefined,
     summary: row.summary ?? null,
+    externalSource: row.external_source ?? undefined, externalKey: row.external_key ?? undefined,
+    provenance: row.provenance ? JSON.parse(row.provenance) : undefined,
+    runRequestedAt: row.run_requested_at ?? undefined, runClaimedAt: row.run_claimed_at ?? undefined,
   };
 }
 
@@ -76,9 +81,9 @@ export class SqliteTaskRepository implements TaskRepository {
       getById: db.prepare('SELECT * FROM tasks WHERE id = ?'),
       insert: db.prepare(`
         INSERT INTO tasks (id, project_id, title, description, priority, column_id, agent_status, agent_type, created_at, started_at, completed_at,
-          repo_path, branch_name, base_branch, use_worktree, worktree_path, archived, group_id, group_order, summary)
+          repo_path, branch_name, base_branch, use_worktree, worktree_path, archived, group_id, group_order, summary, external_source, external_key, provenance, run_requested_at, run_claimed_at)
         VALUES (@id, @project_id, @title, @description, @priority, @column_id, @agent_status, @agent_type, @created_at, @started_at, @completed_at,
-          @repo_path, @branch_name, @base_branch, @use_worktree, @worktree_path, @archived, @group_id, @group_order, @summary)
+          @repo_path, @branch_name, @base_branch, @use_worktree, @worktree_path, @archived, @group_id, @group_order, @summary, @external_source, @external_key, @provenance, @run_requested_at, @run_claimed_at)
       `),
       update: db.prepare(`
         UPDATE tasks SET
@@ -96,7 +101,7 @@ export class SqliteTaskRepository implements TaskRepository {
           use_worktree = @use_worktree,
           worktree_path = @worktree_path,
           archived = @archived,
-          summary = @summary
+          summary = @summary, run_requested_at = @run_requested_at, run_claimed_at = @run_claimed_at
         WHERE id = @id
       `),
       delete: db.prepare('DELETE FROM tasks WHERE id = ?'),
@@ -117,6 +122,11 @@ export class SqliteTaskRepository implements TaskRepository {
 
   async getById(id: string): Promise<Task | undefined> {
     const row = this.stmts.getById.get(id) as TaskRow | undefined;
+    return row ? rowToTask(row) : undefined;
+  }
+
+  async getByExternalIdentity(source: string, key: string): Promise<Task | undefined> {
+    const row = this.db.prepare('SELECT * FROM tasks WHERE external_source = ? AND external_key = ?').get(source, key) as TaskRow | undefined;
     return row ? rowToTask(row) : undefined;
   }
 
@@ -141,10 +151,23 @@ export class SqliteTaskRepository implements TaskRepository {
       archived: task.archived ? 1 : 0,
       group_id: task.groupId ?? null,
       group_order: task.groupOrder ?? null,
-      summary: task.summary ?? null,
+      summary: task.summary ?? null, external_source: task.externalSource ?? null, external_key: task.externalKey ?? null,
+      provenance: task.provenance ? JSON.stringify(task.provenance) : null, run_requested_at: task.runRequestedAt ?? null, run_claimed_at: task.runClaimedAt ?? null,
     });
     return task;
   }
+
+  async createIdempotent(task: Task): Promise<{ task: Task; created: boolean }> {
+    try { await this.create(task); return { task, created: true }; } catch (err) {
+      if (task.externalSource && task.externalKey && err instanceof Error && err.message.includes('UNIQUE')) {
+        const existing = await this.getByExternalIdentity(task.externalSource, task.externalKey); if (existing) return { task: existing, created: false };
+      } throw err;
+    }
+  }
+  async requestRun(id: string, at: number) { this.db.prepare('UPDATE tasks SET run_requested_at=?, run_claimed_at=NULL WHERE id=?').run(at,id); return this.getById(id); }
+  async claimRun(id: string, at: number) { const staleBefore=at-30_000; const r=this.db.prepare("UPDATE tasks SET run_claimed_at=? WHERE id=? AND run_requested_at IS NOT NULL AND (run_claimed_at IS NULL OR run_claimed_at < ?) AND agent_status NOT IN ('complete','failed')").run(at,id,staleBefore); return r.changes ? this.getById(id) : undefined; }
+  async clearRun(id: string) { this.db.prepare('UPDATE tasks SET run_requested_at=NULL, run_claimed_at=NULL WHERE id=?').run(id); return this.getById(id); }
+  async getPendingRuns(staleBefore = Date.now()-30_000) { return (this.db.prepare("SELECT * FROM tasks WHERE run_requested_at IS NOT NULL AND (run_claimed_at IS NULL OR run_claimed_at < ?) AND agent_status NOT IN ('complete','failed') ORDER BY run_requested_at").all(staleBefore) as TaskRow[]).map(rowToTask); }
 
   async update(id: string, updates: Partial<Task>): Promise<Task | undefined> {
     return this.db.transaction(() => {
@@ -168,7 +191,7 @@ export class SqliteTaskRepository implements TaskRepository {
         use_worktree: merged.useWorktree != null ? (merged.useWorktree ? 1 : 0) : null,
         worktree_path: merged.worktreePath ?? null,
         archived: merged.archived ? 1 : 0,
-        summary: merged.summary ?? null,
+        summary: merged.summary ?? null, run_requested_at: merged.runRequestedAt ?? null, run_claimed_at: merged.runClaimedAt ?? null,
       });
       return merged;
     })();

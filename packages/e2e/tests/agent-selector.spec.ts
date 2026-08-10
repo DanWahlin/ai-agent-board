@@ -8,6 +8,7 @@ const AGENT_LABELS: Record<string, string> = {
   opencode: 'OpenCode',
   hermes: 'Hermes',
   openclaw: 'OpenClaw',
+  grok: 'Grok',
 };
 
 const AGENT_LABEL_ORDER = Object.values(AGENT_LABELS);

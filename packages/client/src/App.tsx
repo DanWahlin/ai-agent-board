@@ -44,11 +44,13 @@ function BoardPage({
   theme,
   toggleTheme,
   onBackToProjects,
+  initialTaskId,
 }: {
   project: Project;
   theme: 'dark' | 'light';
   toggleTheme: () => void;
   onBackToProjects: () => void;
+  initialTaskId?: string;
 }) {
   const lockedRepoPath = project.repoPath;
   const projectDefaults = {
@@ -65,6 +67,7 @@ function BoardPage({
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  useEffect(() => { if (initialTaskId) setSelectedTaskId(initialTaskId); }, [initialTaskId]);
   const [highlightRequiredFields, setHighlightRequiredFields] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [deletingTask, setDeletingTask] = useState<Task | null>(null);
@@ -477,7 +480,7 @@ function BoardPage({
 
 type RouteState =
   | { view: 'projects'; initialCreate?: ProjectDialogInitialValues }
-  | { view: 'board'; projectId?: string };
+  | { view: 'board'; projectId?: string; taskId?: string };
 
 function parseCreateQuery(search: string): ProjectDialogInitialValues {
   const params = new URLSearchParams(search);
@@ -515,6 +518,8 @@ function readRoute(): RouteState {
     return { view: 'projects', initialCreate: parseCreateQuery(window.location.search) };
   }
   if (path === '/projects') return { view: 'projects' };
+  const taskMatch = path.match(/^\/projects\/([^/]+)\/tasks\/([^/]+)$/);
+  if (taskMatch) return { view: 'board', projectId: decodeURIComponent(taskMatch[1]), taskId: decodeURIComponent(taskMatch[2]) };
   const match = path.match(/^\/projects\/([^/]+)$/);
   if (match) return { view: 'board', projectId: decodeURIComponent(match[1]) };
   return { view: 'board' };
@@ -602,6 +607,7 @@ export function App() {
       theme={theme}
       toggleTheme={toggleTheme}
       onBackToProjects={() => navigate('/projects')}
+      initialTaskId={route.view === 'board' ? route.taskId : undefined}
     />
   );
 }

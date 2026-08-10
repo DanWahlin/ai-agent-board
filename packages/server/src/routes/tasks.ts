@@ -44,8 +44,11 @@ export function createTaskRouter(repo: TaskRepository, agentManager: AgentManage
       return;
     }
 
-    const task = buildTask(body);
-    await repo.create(task);
+    const idempotencyKey = req.header('Idempotency-Key')?.trim();
+    if (idempotencyKey && idempotencyKey.length > 200) { res.status(400).json({ error: 'Idempotency-Key is too long' }); return; }
+    const task = buildTask({ ...body, externalSource: idempotencyKey ? (req.body.externalSource || 'api') : req.body.externalSource, externalKey: idempotencyKey || req.body.externalKey, provenance: sanitizeProvenance(req.body.provenance) });
+    const creation = await repo.createIdempotent(task);
+    if (!creation.created) { res.status(200).set('Idempotent-Replay', 'true').json(creation.task); return; }
     broadcastTaskUpdate(task);
 
     const { autoRun } = req.body;
@@ -63,6 +66,7 @@ export function createTaskRouter(repo: TaskRepository, agentManager: AgentManage
         res.status(201).json(failed || { ...task, agentStatus: 'failed' });
         return;
       }
+      await repo.requestRun(task.id, Date.now());
       await startAgentForTask(task, repo, agentManager);
       const latest = await repo.getById(task.id);
       res.status(201).json(latest || task);
@@ -127,6 +131,7 @@ export function createTaskRouter(repo: TaskRepository, agentManager: AgentManage
           );
           if (failed) created[i] = failed;
         } else {
+          await repo.requestRun(task.id, Date.now());
           await startAgentForTask(task, repo, agentManager);
           const latest = await repo.getById(task.id);
           if (latest) created[i] = latest;
@@ -325,6 +330,12 @@ export function createTaskRouter(repo: TaskRepository, agentManager: AgentManage
   }));
 
   return router;
+}
+
+function sanitizeProvenance(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const allowed = ['sourceProfile','sourcePlatform','sourceSession','sourceMessage','requestedBy','origin'];
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([k,v]) => allowed.includes(k) && (k === 'origin' ? !!v && typeof v === 'object' : typeof v === 'string')));
 }
 
 async function getProjectForRequest(projectRepo: ProjectRepository, value: unknown): Promise<Project | undefined> {

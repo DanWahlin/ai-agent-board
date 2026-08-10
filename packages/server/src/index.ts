@@ -14,6 +14,7 @@ import { createTemplateRouter } from './routes/templates.js';
 import { createGroupsRouter } from './routes/groups.js';
 import { createAttachmentsRouter } from './routes/attachments.js';
 import { createProjectsRouter } from './routes/projects.js';
+import { createOrchestrationsRouter } from './routes/orchestrations.js';
 import type { AttachmentStore } from './repositories/attachment-types.js';
 import { AgentManager } from './services/agent-manager.js';
 import { authMiddleware } from './middleware/auth.js';
@@ -21,6 +22,7 @@ import type { TaskRepository } from './repositories/types.js';
 import type { TemplateRepository } from './repositories/template-types.js';
 import type { TaskGroupRepository } from './repositories/group-types.js';
 import type { ProjectRepository } from './repositories/project-types.js';
+import { startAgentForTask } from './routes/helpers.js';
 import { isLoopbackAddress } from './network-policy.js';
 
 const app = express();
@@ -32,7 +34,7 @@ app.use(cors({ origin: ALLOWED_ORIGINS }));
 app.use(express.json({ limit: '100kb' }));
 
 // API key auth — when API_KEY env var is set, all /api routes require
-// Authorization: Bearer <key>. When unset, auth is skipped (local dev).
+// Authorization: Bearer *** When unset, auth is skipped (local dev).
 app.use('/api', authMiddleware);
 
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -88,6 +90,7 @@ const agentManager = new AgentManager();
   agentManager.initAttachmentStore(attachmentStore);
 
   app.use('/api/projects', createProjectsRouter(projectRepo, taskRepo, groupRepo, agentManager));
+  app.use('/api/orchestrations', createOrchestrationsRouter(taskRepo, projectRepo, agentManager));
   app.use('/api/tasks', createTaskRouter(taskRepo, agentManager, projectRepo));
   app.use('/api/tasks', createAgentRouter(taskRepo, agentManager, groupRepo, projectRepo));
   app.use('/api/tasks', createGitRouter(taskRepo, agentManager));
@@ -96,9 +99,8 @@ const agentManager = new AgentManager();
   app.use('/api', createAttachmentsRouter(taskRepo, attachmentStore));
 
   // GET /api/agents — list available agents
-  app.get('/api/agents', (_req, res) => {
-    res.json(agentManager.getAvailableAgents());
-  });
+  app.get('/api/agents', (_req, res) => { res.json(agentManager.getAvailableAgents()); });
+  app.post('/api/agents/refresh', async (_req, res, next) => { try { res.json(await agentManager.refresh()); } catch (err) { next(err); } });
 
   // Health check (no auth required)
   app.get('/api/health', (_req, res) => {
@@ -151,6 +153,12 @@ const agentManager = new AgentManager();
     }
   } catch (err) {
     console.error('[server] failed to recover groups:', err);
+  }
+
+  // Re-dispatch durable requests left unclaimed by a crash.
+  for (const pending of await taskRepo.getPendingRuns(Date.now())) {
+    console.warn(`[server] recovering requested run ${pending.id}`);
+    await startAgentForTask(pending, taskRepo, agentManager);
   }
 
   // Recover standalone tasks orphaned by a previous server restart.

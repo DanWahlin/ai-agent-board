@@ -1,0 +1,6 @@
+name: agent-board
+version: "1.0.0"
+description: "Route explicit coding-agent work from Hermes into the shared AI Agent Board."
+author: "Dan Wahlin"
+requires_env:
+  - AGENT_BOARD_URL

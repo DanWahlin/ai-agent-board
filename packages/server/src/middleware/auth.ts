@@ -31,8 +31,9 @@ export function authenticateToken(token: string | undefined): { authenticated: b
 function requiredScope(req: Request): ServiceScope | undefined {
   const p=req.path, method=req.method;
   if (p === '/health') return undefined;
-  if (p === '/agents' || p === '/agents/refresh') return 'agents:read';
-  if (p.startsWith('/projects')) return method === 'GET' ? 'projects:read' : undefined;
+  if (p === '/agents') return undefined;
+  if (p === '/agents/refresh') return 'agents:read';
+  if (p.startsWith('/projects')) return undefined;
   if (p === '/orchestrations' && method === 'POST') return 'orchestrations:create';
   if (/^\/orchestrations\/[^/]+$/.test(p) && method === 'GET') return 'orchestrations:read';
   if (/^\/orchestrations\/[^/]+\/message$/.test(p) && method === 'POST') return 'orchestrations:message';

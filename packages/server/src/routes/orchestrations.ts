@@ -54,6 +54,12 @@ function generateBranchName(key: string, title: string): string {
   return `agent/${slug}-${suffix}`;
 }
 
+function taskLink(req: Request, projectId: string, taskId: string): string {
+  const configured = process.env.AGENT_BOARD_PUBLIC_URL?.trim().replace(/\/$/, '');
+  const origin = configured || `${req.protocol}://${req.get('host')}`;
+  return `${origin}/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}`;
+}
+
 export function createOrchestrationsRouter(
   repo: TaskRepository,
   projects: ProjectRepository,
@@ -67,7 +73,7 @@ export function createOrchestrationsRouter(
       res.status(404).json({ error: 'orchestration not found' });
       return;
     }
-    const deepLink = `/projects/${encodeURIComponent(task.projectId)}/tasks/${encodeURIComponent(task.id)}`;
+    const deepLink = taskLink(req, task.projectId, task.id);
     res.json({ task, contract: { projectId: task.projectId, taskId: task.id, deepLink } });
   }));
 
@@ -105,6 +111,10 @@ export function createOrchestrationsRouter(
       return;
     }
     const project = matches[0];
+    if (!project.repoPath) {
+      res.status(409).json({ error: 'project must have a repository path before coding work can start' });
+      return;
+    }
 
     const agentType = req.body.agentType ?? req.body.agent;
     if (!isValidAgentType(agentType)) {
@@ -187,15 +197,25 @@ export function createOrchestrationsRouter(
       baseBranch,
       branchName,
       useWorktree: true,
-      externalSource: req.body.externalSource || 'hermes',
+      externalSource: 'hermes',
       externalKey: key,
       provenance: sanitizeOrigin(req.body.provenance ?? req.body.origin),
       runRequestedAt: autoStart ? Date.now() : undefined,
     });
 
     const result = await repo.createIdempotent(task);
-    const deepLink = `/projects/${encodeURIComponent(result.task.projectId)}/tasks/${encodeURIComponent(result.task.id)}`;
+    const deepLink = taskLink(req, result.task.projectId, result.task.id);
     if (!result.created) {
+      const conflicts = result.task.projectId !== task.projectId
+        || result.task.agentType !== task.agentType
+        || result.task.title !== task.title
+        || result.task.description !== task.description
+        || result.task.branchName !== task.branchName
+        || result.task.baseBranch !== task.baseBranch;
+      if (conflicts) {
+        res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' });
+        return;
+      }
       res.status(200).set('Idempotent-Replay', 'true').json({
         task: result.task,
         contract: { projectId: result.task.projectId, taskId: result.task.id, deepLink },
@@ -205,7 +225,11 @@ export function createOrchestrationsRouter(
 
     broadcastTaskUpdate(task);
     if (autoStart) {
-      await startAgentForTask(task, repo, agents);
+      queueMicrotask(() => {
+        void startAgentForTask(task, repo, agents).catch((err) => {
+          console.error(`[orchestrations] failed to dispatch task ${task.id}:`, err);
+        });
+      });
     }
     const current = await repo.getById(task.id) || task;
     res.status(201).json({

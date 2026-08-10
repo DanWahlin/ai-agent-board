@@ -34,7 +34,14 @@ class Handler(BaseHTTPRequestHandler):
         size = int(self.headers.get("Content-Length", "0"))
         body = json.loads(self.rfile.read(size)) if size else {}
         self.requests.append((self.command, self.path, dict(self.headers), body))
-        payload: object = {"id": "task-1", "url": "https://board/projects/demo/tasks/task-1"}
+        payload: object = {
+            "task": {"id": "task-1", "projectId": "demo", "agentType": "claude"},
+            "contract": {
+                "taskId": "task-1",
+                "projectId": "demo",
+                "deepLink": "https://board/projects/demo/tasks/task-1",
+            },
+        }
         if self.path == "/api/projects":
             payload = [{"id": "demo", "name": "Demo"}]
         elif self.path.startswith("/api/agents"):
@@ -77,6 +84,7 @@ class PluginTests(unittest.TestCase):
                 )
         result = json.loads(raw)
         self.assertTrue(result["success"])
+        self.assertEqual(result["data"]["contract"]["taskId"], "task-1")
         method, path, headers, body = Handler.requests[-1]
         self.assertEqual((method, path), ("POST", "/api/orchestrations"))
         self.assertEqual(headers["Authorization"], "Bearer secret-token")

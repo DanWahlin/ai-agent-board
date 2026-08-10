@@ -156,8 +156,10 @@ const agentManager = new AgentManager();
   }
 
   // Re-dispatch durable requests left unclaimed by a crash.
+  const recoveredRunIds = new Set<string>();
   for (const pending of await taskRepo.getPendingRuns(Date.now())) {
     console.warn(`[server] recovering requested run ${pending.id}`);
+    recoveredRunIds.add(pending.id);
     await startAgentForTask(pending, taskRepo, agentManager);
   }
 
@@ -165,7 +167,9 @@ const agentManager = new AgentManager();
   // Skip group children (already handled above with group-aware recovery).
   const allTasks = await taskRepo.getAll();
   const orphaned = allTasks.filter(t =>
-    (t.agentStatus === 'planning' || t.agentStatus === 'executing') && !groupChildIds.has(t.id)
+    (t.agentStatus === 'planning' || t.agentStatus === 'executing')
+      && !groupChildIds.has(t.id)
+      && !recoveredRunIds.has(t.id)
   );
   for (const task of orphaned) {
     await taskRepo.update(task.id, {
@@ -174,6 +178,18 @@ const agentManager = new AgentManager();
     });
     console.warn(`[server] recovered orphaned task ${task.id} "${task.title}" (was ${task.agentStatus})`);
   }
+
+  // Reclaim stale dispatch leases continuously, not only after a restart.
+  const dispatchInterval = setInterval(() => {
+    void (async () => {
+      for (const pending of await taskRepo.getPendingRuns()) {
+        if (!agentManager.isRunning(pending.id)) {
+          await startAgentForTask(pending, taskRepo, agentManager);
+        }
+      }
+    })().catch((err) => console.error('[server] dispatch recovery failed:', err));
+  }, 15_000);
+  dispatchInterval.unref();
 
   server.listen(PORT, HOST, () => {
     console.log(`[server] listening on http://${HOST}:${PORT}`);
@@ -192,6 +208,7 @@ const agentManager = new AgentManager();
   // Graceful shutdown
   function shutdown() {
     console.log('[server] shutting down...');
+    clearInterval(dispatchInterval);
     agentManager.shutdownAll();
     try { cleanupDb(); } catch (err) { console.error('[server] db cleanup error:', err); }
     server.close(() => process.exit(0));

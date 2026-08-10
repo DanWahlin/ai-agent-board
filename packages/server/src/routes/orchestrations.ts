@@ -87,7 +87,11 @@ export function createOrchestrationsRouter(
       res.status(400).json({ error: 'message is required' });
       return;
     }
-    await agents.sendMessage(task.id, req.body.message.trim());
+    const delivered = await agents.sendMessage(task.id, req.body.message.trim());
+    if (!delivered) {
+      res.status(409).json({ error: 'agent is not currently running for this orchestration' });
+      return;
+    }
     res.json({ success: true });
   }));
 

@@ -43,15 +43,31 @@ function requiredScope(req: Request): ServiceScope | undefined {
 }
 
 export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
-  const configured=!!process.env.API_KEY || credentials().length>0;
-  if (!configured) { next(); return; }
-  const header=req.headers.authorization;
-  const auth=authenticateToken(header?.startsWith('Bearer ') ? header.slice(7) : undefined);
-  if (!auth.authenticated) { res.status(401).json({error:'unauthorized'}); return; }
-  if (!auth.legacy) {
-    const scope=requiredScope(req);
-    if (!scope || !auth.scopes.includes(scope)) { res.status(403).json({error:'forbidden'}); return; }
+  const hasLegacyKey = Boolean(process.env.API_KEY);
+  const serviceCredentials = credentials();
+  const scope = requiredScope(req);
+  const header = req.headers.authorization;
+  const token = header?.startsWith('Bearer ') ? header.slice(7) : undefined;
+
+  // API_KEY retains the legacy "protect every API route" behavior.
+  if (hasLegacyKey) {
+    const auth = authenticateToken(token);
+    if (!auth.authenticated) { res.status(401).json({ error: 'unauthorized' }); return; }
+    if (!auth.legacy && (!scope || !auth.scopes.includes(scope))) {
+      res.status(403).json({ error: 'forbidden' });
+      return;
+    }
+    next();
+    return;
   }
+
+  // A service-token-only deployment keeps the existing browser/API surface
+  // behind its outer access boundary, but requires scoped auth for the narrow
+  // orchestration facade and agent refresh mutation.
+  if (serviceCredentials.length === 0 || !scope) { next(); return; }
+  const auth = authenticateToken(token);
+  if (!auth.authenticated) { res.status(401).json({ error: 'unauthorized' }); return; }
+  if (!auth.scopes.includes(scope)) { res.status(403).json({ error: 'forbidden' }); return; }
   next();
 }
 

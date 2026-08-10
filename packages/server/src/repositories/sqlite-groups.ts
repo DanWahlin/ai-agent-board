@@ -39,6 +39,7 @@ interface TaskRow {
   archived: number;
   group_id: string | null;
   group_order: number | null;
+  timeout_minutes: number | null;
 }
 
 function rowToGroup(row: GroupRow): TaskGroup {
@@ -80,6 +81,7 @@ function rowToTask(row: TaskRow): Task {
     archived: Boolean(row.archived),
     groupId: row.group_id ?? undefined,
     groupOrder: row.group_order ?? undefined,
+    timeoutMinutes: row.timeout_minutes ?? undefined,
   };
 }
 

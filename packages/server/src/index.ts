@@ -134,6 +134,7 @@ const agentManager = new AgentManager();
           groupChildIds.add(child.id);
           if (child.agentStatus === 'executing') {
             await taskRepo.update(child.id, { agentStatus: 'failed', completedAt: Date.now() });
+            await taskRepo.clearRun(child.id);
             console.warn(`[server] recovered orphaned group child ${child.id} "${child.title}" (was executing)`);
           } else if (child.agentStatus === 'planning') {
             // Planning children hadn't started — reset to idle so they can be re-queued
@@ -176,6 +177,7 @@ const agentManager = new AgentManager();
       agentStatus: 'failed',
       completedAt: Date.now(),
     });
+    await taskRepo.clearRun(task.id);
     console.warn(`[server] recovered orphaned task ${task.id} "${task.title}" (was ${task.agentStatus})`);
   }
 

@@ -15,11 +15,11 @@ import ImageUpload from './ImageUpload';
 interface TaskDialogProps {
   open: boolean;
   onClose: () => void;
-  onSubmit: (task: { title: string; description: string; priority: Priority; columnId: ColumnId; agentType: AgentType; autoRun?: boolean; repoPath?: string; branchName?: string; baseBranch?: string; useWorktree?: boolean; timeoutMinutes?: number }) => Promise<unknown>;
+  onSubmit: (task: { title: string; description: string; priority: Priority; columnId: ColumnId; agentType: AgentType; autoRun?: boolean; repoPath?: string; branchName?: string; baseBranch?: string; useWorktree?: boolean; timeoutMinutes?: number | null }) => Promise<unknown>;
   /** When set, dialog is in edit mode with pre-populated fields */
   editTask?: Task | null;
   /** Called on save in edit mode */
-  onEditSubmit?: (id: string, updates: { title: string; description: string; priority: Priority; agentType: AgentType; repoPath?: string; branchName?: string; baseBranch?: string; useWorktree?: boolean; timeoutMinutes?: number }) => Promise<unknown>;
+  onEditSubmit?: (id: string, updates: { title: string; description: string; priority: Priority; agentType: AgentType; repoPath?: string; branchName?: string; baseBranch?: string; useWorktree?: boolean; timeoutMinutes?: number | null }) => Promise<unknown>;
   /** When true, highlight missing required fields (e.g. opened from Play button) */
   highlightRequired?: boolean;
   /** Project-level repo path that cannot be changed per task. */
@@ -166,7 +166,7 @@ export function TaskDialog({ open, onClose, onSubmit, editTask, onEditSubmit, hi
       branchName: effectiveBranch,
       baseBranch: baseBranch.trim() || 'main',
       useWorktree,
-      timeoutMinutes: timeoutMinutes === '' ? undefined : Number(timeoutMinutes),
+      timeoutMinutes: timeoutMinutes === '' ? (isEditMode ? null : undefined) : Number(timeoutMinutes),
     };
 
     setSubmitting(true);

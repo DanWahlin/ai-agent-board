@@ -108,6 +108,10 @@ export function createOrchestrationsRouter(
       res.status(409).json({ error: 'agent is already running for this orchestration' });
       return;
     }
+    if (task.agentStatus !== 'failed') {
+      res.status(409).json({ error: 'only failed or timed-out orchestrations can be retried' });
+      return;
+    }
     const timeoutMinutes = req.body.timeoutMinutes ?? req.body.timeout_minutes ?? task.timeoutMinutes;
     if (timeoutMinutes !== undefined && !isValidAgentTimeoutMinutes(timeoutMinutes)) {
       res.status(400).json({ error: `timeoutMinutes must be an integer between ${MIN_AGENT_TIMEOUT_MINUTES} and ${MAX_AGENT_TIMEOUT_MINUTES}` });
@@ -118,7 +122,6 @@ export function createOrchestrationsRouter(
       res.status(409).json({ error: `agent ${task.agentType} is not ready`, reason: ready?.reason });
       return;
     }
-    agents.resetEvents(task.id);
     const reset = await repo.update(task.id, {
       agentStatus: 'idle',
       columnId: 'in-progress',

@@ -212,7 +212,7 @@ export function createTaskRouter(repo: TaskRepository, agentManager: AgentManage
       res.status(400).json({ error: `invalid agentType: must be one of ${VALID_AGENT_TYPES.join(', ')}` });
       return;
     }
-    if (timeoutMinutes !== undefined && !isValidAgentTimeoutMinutes(timeoutMinutes)) {
+    if (timeoutMinutes !== undefined && timeoutMinutes !== null && !isValidAgentTimeoutMinutes(timeoutMinutes)) {
       res.status(400).json({ error: `timeoutMinutes must be an integer between ${MIN_AGENT_TIMEOUT_MINUTES} and ${MAX_AGENT_TIMEOUT_MINUTES}` });
       return;
     }

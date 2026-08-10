@@ -39,7 +39,7 @@ export interface Task {
   externalKey?: string;
   provenance?: TaskProvenance;
   /** Optional execution limit for this task. Omit to use the server default. */
-  timeoutMinutes?: number;
+  timeoutMinutes?: number | null;
 }
 
 export interface TaskProvenance {

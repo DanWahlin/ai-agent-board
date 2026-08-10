@@ -109,7 +109,7 @@ npm run build:server   # tsc -b tsconfig.build.json
 | `ALLOWED_REPO_ROOTS` | `$HOME`, temp, current workspace | Comma-separated allowed repo root paths (security whitelist) |
 | `ALLOWED_ORIGINS` | `http://localhost:8081,http://localhost:4175,http://localhost:4176` | CORS origins |
 | `ALLOWED_HOSTS` | `localhost,127.0.0.1` | Server-side Host allowlist for WebSocket upgrades. Add the trusted reverse-proxy hostname in production. |
-| `AGENT_TIMEOUT_MS` | `600000` (10 min) | Max agent execution time |
+| `AGENT_TIMEOUT_MS` | `3600000` (60 min) | Default max agent execution time; tasks can override it from 1-240 minutes |
 | `API_URL` | `http://localhost:8080` | Vite proxy target |
 | `VITE_ALLOWED_HOSTS` | `localhost,127.0.0.1` | Vite HTTP and proxy-upgrade Host allowlist loaded from `.env` or process environment. Add trusted reverse-proxy hostnames; never use a wildcard. |
 | `PROJECTS_DIR` | `~/projects` | Host projects path |

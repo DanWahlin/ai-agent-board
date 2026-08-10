@@ -15,11 +15,11 @@ import ImageUpload from './ImageUpload';
 interface TaskDialogProps {
   open: boolean;
   onClose: () => void;
-  onSubmit: (task: { title: string; description: string; priority: Priority; columnId: ColumnId; agentType: AgentType; autoRun?: boolean; repoPath?: string; branchName?: string; baseBranch?: string; useWorktree?: boolean }) => Promise<unknown>;
+  onSubmit: (task: { title: string; description: string; priority: Priority; columnId: ColumnId; agentType: AgentType; autoRun?: boolean; repoPath?: string; branchName?: string; baseBranch?: string; useWorktree?: boolean; timeoutMinutes?: number }) => Promise<unknown>;
   /** When set, dialog is in edit mode with pre-populated fields */
   editTask?: Task | null;
   /** Called on save in edit mode */
-  onEditSubmit?: (id: string, updates: { title: string; description: string; priority: Priority; agentType: AgentType; repoPath?: string; branchName?: string; baseBranch?: string; useWorktree?: boolean }) => Promise<unknown>;
+  onEditSubmit?: (id: string, updates: { title: string; description: string; priority: Priority; agentType: AgentType; repoPath?: string; branchName?: string; baseBranch?: string; useWorktree?: boolean; timeoutMinutes?: number }) => Promise<unknown>;
   /** When true, highlight missing required fields (e.g. opened from Play button) */
   highlightRequired?: boolean;
   /** Project-level repo path that cannot be changed per task. */
@@ -48,6 +48,7 @@ export function TaskDialog({ open, onClose, onSubmit, editTask, onEditSubmit, hi
   const [branchName, setBranchName] = useState('');
   const [baseBranch, setBaseBranch] = useState('main');
   const [useWorktree, setUseWorktree] = useState(false);
+  const [timeoutMinutes, setTimeoutMinutes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [pathError, setPathError] = useState('');
   const [pendingImages, setPendingImages] = useState<File[]>([]);
@@ -73,6 +74,7 @@ export function TaskDialog({ open, onClose, onSubmit, editTask, onEditSubmit, hi
       setBranchName(editTask.branchName || `task/${slugify(editTask.title)}`);
       setBaseBranch(editTask.baseBranch || 'main');
       setUseWorktree(editTask.useWorktree ?? false);
+      setTimeoutMinutes(editTask.timeoutMinutes?.toString() ?? '');
       // Load attachments from server
       api.getAttachments(editTask.id).then(setExistingAttachments).catch(() => setExistingAttachments([]));
       // Highlight missing path if opened via Play button
@@ -98,6 +100,7 @@ export function TaskDialog({ open, onClose, onSubmit, editTask, onEditSubmit, hi
       setBranchName('');
       setBaseBranch('main');
       setUseWorktree(false);
+      setTimeoutMinutes('');
       setSubmitting(false);
       setPathError('');
       setPendingImages([]);
@@ -163,6 +166,7 @@ export function TaskDialog({ open, onClose, onSubmit, editTask, onEditSubmit, hi
       branchName: effectiveBranch,
       baseBranch: baseBranch.trim() || 'main',
       useWorktree,
+      timeoutMinutes: timeoutMinutes === '' ? undefined : Number(timeoutMinutes),
     };
 
     setSubmitting(true);
@@ -210,6 +214,7 @@ export function TaskDialog({ open, onClose, onSubmit, editTask, onEditSubmit, hi
       setBranchName('');
       setBaseBranch(defaultBaseBranch);
       setUseWorktree(defaultUseWorktree);
+      setTimeoutMinutes('');
       setPendingImages([]);
       setExistingAttachments([]);
       onClose();
@@ -429,6 +434,26 @@ export function TaskDialog({ open, onClose, onSubmit, editTask, onEditSubmit, hi
                     </motion.div>
                   )}
                 </AnimatePresence>
+              </div>
+
+              <div>
+                <label htmlFor="task-timeout-minutes" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                  Time limit (minutes)
+                </label>
+                <input
+                  id="task-timeout-minutes"
+                  type="number"
+                  min={1}
+                  max={240}
+                  step={1}
+                  value={timeoutMinutes}
+                  onChange={(e) => setTimeoutMinutes(e.target.value)}
+                  placeholder="60 (server default)"
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+                <p className="mt-1 text-xs text-muted-foreground/60">
+                  Leave blank for the server default. Deep reviews can use up to 240 minutes.
+                </p>
               </div>
 
               {/* Auto-run (create mode only) */}

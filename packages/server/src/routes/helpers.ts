@@ -5,7 +5,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import type { Project, Task, TaskGroup } from '../types.js';
-import { isValidPriority, isValidColumnId, isValidAgentType, VALID_AGENT_TYPES, MAX_TITLE_LENGTH, MAX_DESCRIPTION_LENGTH } from '@ai-agent-board/shared/constants.js';
+import { isValidPriority, isValidColumnId, isValidAgentType, isValidAgentTimeoutMinutes, VALID_AGENT_TYPES, MAX_TITLE_LENGTH, MAX_DESCRIPTION_LENGTH, MIN_AGENT_TIMEOUT_MINUTES, MAX_AGENT_TIMEOUT_MINUTES } from '@ai-agent-board/shared/constants.js';
 import { errorMessage } from '../utils.js';
 import { getCloneRoot } from '../config.js';
 import type { TaskRepository } from '../repositories/types.js';
@@ -463,7 +463,7 @@ export function isRateLimited(taskId: string): boolean {
 // ─── Task field validation ──────────────────────────────────────────
 
 export function validateTaskFields(body: Record<string, any>): string | null {
-  const { title, description, priority, columnId, agentType, repoPath, branchName, baseBranch, useWorktree, autoRun } = body;
+  const { title, description, priority, columnId, agentType, repoPath, branchName, baseBranch, useWorktree, autoRun, timeoutMinutes } = body;
 
   if (!title || typeof title !== 'string' || !title.trim()) {
     return 'title is required and must be a non-empty string';
@@ -515,13 +515,16 @@ export function validateTaskFields(body: Record<string, any>): string | null {
   if (autoRun !== undefined && typeof autoRun !== 'boolean') {
     return 'autoRun must be a boolean';
   }
+  if (timeoutMinutes !== undefined && !isValidAgentTimeoutMinutes(timeoutMinutes)) {
+    return `timeoutMinutes must be an integer between ${MIN_AGENT_TIMEOUT_MINUTES} and ${MAX_AGENT_TIMEOUT_MINUTES}`;
+  }
   return null;
 }
 
 // ─── Task builder ───────────────────────────────────────────────────
 
 export function buildTask(body: Record<string, any>): Task {
-  const { title, description, priority, columnId, agentType, repoPath, branchName, baseBranch, useWorktree, projectId } = body;
+  const { title, description, priority, columnId, agentType, repoPath, branchName, baseBranch, useWorktree, projectId, timeoutMinutes } = body;
   return {
     id: uuid(),
     projectId: typeof projectId === 'string' && projectId ? projectId : 'default',
@@ -536,6 +539,7 @@ export function buildTask(body: Record<string, any>): Task {
     branchName: branchName || undefined,
     baseBranch: baseBranch || undefined,
     useWorktree: useWorktree ?? undefined, externalSource: body.externalSource, externalKey: body.externalKey, provenance: body.provenance, runRequestedAt: body.runRequestedAt,
+    timeoutMinutes,
   };
 }
 

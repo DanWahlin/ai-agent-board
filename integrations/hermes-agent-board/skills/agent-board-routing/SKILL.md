@@ -34,6 +34,7 @@ Do not route general coding questions, comparisons, hypotheticals, quoted exampl
 6. Return the project, agent, card ID, direct Board link, branch, and current status
 7. Follow-ups for an active card should use `agent_board_send_message`, not create a duplicate card
 8. Use `agent_board_get_task` to check status when Dan asks for progress
+9. Use `timeout_minutes` for work expected to exceed the 60-minute Board default. If a task times out, call `agent_board_retry_task` on the existing card with a larger limit; never bypass tracking by launching the named coding agent directly
 
 ## Safety
 

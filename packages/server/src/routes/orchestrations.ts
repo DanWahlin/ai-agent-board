@@ -11,7 +11,10 @@ import {
 } from './helpers.js';
 import {
   isValidAgentType,
+  isValidAgentTimeoutMinutes,
   isValidPriority,
+  MIN_AGENT_TIMEOUT_MINUTES,
+  MAX_AGENT_TIMEOUT_MINUTES,
   MAX_DESCRIPTION_LENGTH,
   MAX_TITLE_LENGTH,
 } from '@ai-agent-board/shared/constants.js';
@@ -95,6 +98,49 @@ export function createOrchestrationsRouter(
     res.json({ success: true });
   }));
 
+  router.post('/:id/retry', asyncHandler(async (req: Request, res: Response) => {
+    const task = await repo.getById(String(req.params.id));
+    if (!task || !task.externalSource) {
+      res.status(404).json({ error: 'orchestration not found' });
+      return;
+    }
+    if (agents.isRunning(task.id)) {
+      res.status(409).json({ error: 'agent is already running for this orchestration' });
+      return;
+    }
+    const timeoutMinutes = req.body.timeoutMinutes ?? req.body.timeout_minutes ?? task.timeoutMinutes;
+    if (timeoutMinutes !== undefined && !isValidAgentTimeoutMinutes(timeoutMinutes)) {
+      res.status(400).json({ error: `timeoutMinutes must be an integer between ${MIN_AGENT_TIMEOUT_MINUTES} and ${MAX_AGENT_TIMEOUT_MINUTES}` });
+      return;
+    }
+    const ready = agents.getAvailableAgents().find((agent) => agent.name === task.agentType);
+    if (!ready?.available) {
+      res.status(409).json({ error: `agent ${task.agentType} is not ready`, reason: ready?.reason });
+      return;
+    }
+    agents.resetEvents(task.id);
+    const reset = await repo.update(task.id, {
+      agentStatus: 'idle',
+      columnId: 'in-progress',
+      startedAt: undefined,
+      completedAt: undefined,
+      timeoutMinutes,
+    });
+    if (!reset) {
+      res.status(500).json({ error: 'failed to reset orchestration' });
+      return;
+    }
+    await repo.requestRun(task.id, Date.now());
+    broadcastTaskUpdate(reset);
+    queueMicrotask(() => {
+      void startAgentForTask(reset, repo, agents).catch((err) => {
+        console.error(`[orchestrations] failed to retry task ${task.id}:`, err);
+      });
+    });
+    const deepLink = taskLink(req, reset.projectId, reset.id);
+    res.status(202).json({ task: reset, contract: { projectId: reset.projectId, taskId: reset.id, deepLink } });
+  }));
+
   router.post('/', asyncHandler(async (req: Request, res: Response) => {
     const projectReference = req.body.project;
     if (typeof projectReference !== 'string' || !projectReference.trim()) {
@@ -154,6 +200,11 @@ export function createOrchestrationsRouter(
       res.status(400).json({ error: 'invalid priority' });
       return;
     }
+    const timeoutMinutes = req.body.timeoutMinutes ?? req.body.timeout_minutes;
+    if (timeoutMinutes !== undefined && !isValidAgentTimeoutMinutes(timeoutMinutes)) {
+      res.status(400).json({ error: `timeoutMinutes must be an integer between ${MIN_AGENT_TIMEOUT_MINUTES} and ${MAX_AGENT_TIMEOUT_MINUTES}` });
+      return;
+    }
 
     const autoStart = req.body.autoStart ?? req.body.auto_start ?? true;
     if (typeof autoStart !== 'boolean') {
@@ -205,6 +256,7 @@ export function createOrchestrationsRouter(
       externalKey: key,
       provenance: sanitizeOrigin(req.body.provenance ?? req.body.origin),
       runRequestedAt: autoStart ? Date.now() : undefined,
+      timeoutMinutes,
     });
 
     const result = await repo.createIdempotent(task);
@@ -215,7 +267,8 @@ export function createOrchestrationsRouter(
         || result.task.title !== task.title
         || result.task.description !== task.description
         || result.task.branchName !== task.branchName
-        || result.task.baseBranch !== task.baseBranch;
+        || result.task.baseBranch !== task.baseBranch
+        || result.task.timeoutMinutes !== task.timeoutMinutes;
       if (conflicts) {
         res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' });
         return;

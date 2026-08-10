@@ -13,8 +13,7 @@ import { UPLOADS_DIR } from '../routes/attachments.js';
 import type { AttachmentStore } from '../repositories/attachment-types.js';
 import { errorMessage } from '../utils.js';
 import { detectAvailableAgents } from './agent-detection.js';
-
-const AGENT_TIMEOUT_MS = parseInt(process.env.AGENT_TIMEOUT_MS || '600000', 10);
+import { resolveTaskTimeoutMs } from './agent-timeout.js';
 
 function loadAttachmentAsBase64(filePath: string, displayName: string, mimeType: string): AgentAttachment | null {
   try {
@@ -690,11 +689,13 @@ Optional list of any work you did not complete or that should be followed up. Om
         this.sessions.set(task.id, { session, startTime: sessionStartTime, agentType });
         onStatusChange('executing');
 
-        // Timeout guard
+        // Timeout guard. A task override is persisted with the card so retries
+        // stay managed by Agent Board instead of escaping to a direct process.
+        const taskTimeoutMs = resolveTaskTimeoutMs(task);
         const timeoutId = setTimeout(() => {
           if (!this.sessions.has(task.id)) return;
-          const timeoutMsg = `Agent timed out after ${Math.round(AGENT_TIMEOUT_MS / 60000)} minutes`;
-          console.warn(`[agent-manager] task ${task.id} timed out after ${AGENT_TIMEOUT_MS}ms`);
+          const timeoutMsg = `Agent timed out after ${Math.round(taskTimeoutMs / 60000)} minutes`;
+          console.warn(`[agent-manager] task ${task.id} timed out after ${taskTimeoutMs}ms`);
           this.emitEvent(task.id, {
             id: uuid(), taskId: task.id, type: 'error',
             content: timeoutMsg,
@@ -707,7 +708,7 @@ Optional list of any work you did not complete or that should be followed up. Om
             entry.session?.destroy().catch(() => {});
           }
           terminateOnce('failed', timeoutMsg);
-        }, AGENT_TIMEOUT_MS);
+        }, taskTimeoutMs);
 
         const entry = this.sessions.get(task.id);
         if (entry) entry.timeoutId = timeoutId;

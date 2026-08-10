@@ -97,7 +97,7 @@ export const api = {
   getTasks: (includeArchived = false, projectId?: string) =>
     request<Task[]>(withQuery('/tasks', { includeArchived, projectId })),
 
-  createTask: (data: { title: string; description?: string; priority?: Priority; columnId?: ColumnId; agentType?: AgentType; repoPath?: string; branchName?: string; baseBranch?: string; useWorktree?: boolean; autoRun?: boolean; projectId?: string }) =>
+  createTask: (data: { title: string; description?: string; priority?: Priority; columnId?: ColumnId; agentType?: AgentType; repoPath?: string; branchName?: string; baseBranch?: string; useWorktree?: boolean; autoRun?: boolean; projectId?: string; timeoutMinutes?: number }) =>
     request<Task>('/tasks', { method: 'POST', body: JSON.stringify(data) }),
 
   updateTask: (id: string, data: Partial<Task>) =>

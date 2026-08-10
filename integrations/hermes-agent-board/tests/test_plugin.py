@@ -92,6 +92,20 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(body["provenance"]["sourceSession"], "session-1")
         self.assertEqual(body["isolation"], "worktree")
         self.assertEqual(body["agentType"], "claude")
+        self.assertNotIn("timeoutMinutes", body)
+
+        with patch.dict(os.environ, env, clear=False):
+            plugin._route_task(
+                {
+                    "project": "demo",
+                    "agent": "claude",
+                    "title": "Deep review",
+                    "description": "Review thoroughly",
+                    "timeout_minutes": 120,
+                },
+                session_id="session-2",
+            )
+        self.assertEqual(Handler.requests[-1][3]["timeoutMinutes"], 120)
 
     def test_registers_tools_and_skill(self):
         class Context:
@@ -116,6 +130,7 @@ class PluginTests(unittest.TestCase):
                 "agent_board_route_task",
                 "agent_board_get_task",
                 "agent_board_send_message",
+                "agent_board_retry_task",
             },
         )
         self.assertEqual(ctx.skills[0][0], "agent-board-routing")

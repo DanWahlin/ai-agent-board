@@ -40,6 +40,28 @@ test.describe('Single-call task creation + autoRun', () => {
     await deleteTaskViaAPI(request, task.id);
   });
 
+  test('persists a per-task timeout and rejects invalid bounds', async ({ request }) => {
+    const created = await request.post(`${API}/api/tasks`, {
+      data: { title: 'Long review', timeoutMinutes: 120 },
+    });
+    expect(created.status()).toBe(201);
+    const task = await created.json();
+    expect(task.timeoutMinutes).toBe(120);
+
+    const updated = await request.patch(`${API}/api/tasks/${task.id}`, {
+      data: { timeoutMinutes: 180 },
+    });
+    expect(updated.status()).toBe(200);
+    expect((await updated.json()).timeoutMinutes).toBe(180);
+
+    const invalid = await request.post(`${API}/api/tasks`, {
+      data: { title: 'Invalid timeout', timeoutMinutes: 241 },
+    });
+    expect(invalid.status()).toBe(400);
+    expect((await invalid.json()).error).toContain('between 1 and 240');
+    await deleteTaskViaAPI(request, task.id);
+  });
+
   test('POST /api/tasks with autoRun=true but columnId=backlog does NOT auto-run', async ({ request }) => {
     const res = await request.post(`${API}/api/tasks`, {
       data: {

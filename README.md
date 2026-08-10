@@ -181,10 +181,16 @@ projects. `API_KEY` remains the legacy full-access credential for the UI.
 | `ALLOWED_REPO_ROOTS` | `$HOME`, temp, current workspace | Allowed repo root paths (comma-separated) |
 | `ALLOWED_ORIGINS` | `http://localhost:8081,http://localhost:4175,http://localhost:4176` | CORS origins |
 | `ALLOWED_HOSTS` | `localhost,127.0.0.1` | Server-side Host allowlist for WebSocket upgrades. Add the trusted reverse-proxy hostname in production. |
-| `AGENT_TIMEOUT_MS` | `600000` | Max agent execution time (ms) |
+| `AGENT_TIMEOUT_MS` | `3600000` | Default max agent execution time (60 minutes). Tasks can override this from 1–240 minutes. |
 | `API_URL` | `http://localhost:8080` | Vite proxy target |
 | `VITE_ALLOWED_HOSTS` | `localhost,127.0.0.1` | Vite HTTP and proxy-upgrade Host allowlist. Loaded from `.env` or the process environment. Add trusted reverse-proxy hostnames; never use a wildcard. |
 | `PROJECTS_DIR` | `~/projects` | Host projects path |
+
+### Execution timeouts and event retention
+
+Agent Board defaults each run to 60 minutes. Set a task's **Time limit** to override that run from 1–240 minutes; integrations can send `timeoutMinutes` (or `timeout_minutes` through the Hermes plugin). Timed-out orchestrations should be retried on the same card through `POST /api/orchestrations/:id/retry`, optionally with a larger limit, so status and history remain tracked.
+
+A longer timeout does not pre-fill or resend an hour of context by itself. The selected provider controls its own conversation/context window, while Agent Board forwards the initial task and then consumes provider events. Longer runs can still make more model calls and produce more tool output. The server caps its in-memory event cache at 2,000 events per task and coalesces rapid output for WebSocket delivery, but persists raw events in the database until a task is rerun or deleted. Operators should therefore monitor the `events` table and archive/delete obsolete high-volume tasks according to their retention policy.
 
 ## Project Structure
 

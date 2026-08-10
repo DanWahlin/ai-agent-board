@@ -37,6 +37,7 @@ type TaskSubmitData = {
   branchName?: string;
   baseBranch?: string;
   useWorktree?: boolean;
+  timeoutMinutes?: number;
 };
 
 function BoardPage({

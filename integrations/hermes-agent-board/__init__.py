@@ -104,6 +104,9 @@ def _route_task(params: dict[str, Any], task_id: str = "", session_id: str = "",
         "branchName": params.get("branch_name"),
         "provenance": origin,
     }
+    timeout_minutes = params.get("timeout_minutes")
+    if timeout_minutes is not None:
+        body["timeoutMinutes"] = timeout_minutes
     stable = params.get("idempotency_key")
     if not stable:
         seed = json.dumps({"session": session_id, "origin": origin, "body": body}, sort_keys=True, default=str)
@@ -120,6 +123,14 @@ def _send_message(params: dict[str, Any], **_: Any) -> str:
     task_id = urllib.parse.quote(str(params.get("task_id", "")), safe="")
     body = {"message": params.get("message", "")}
     return _result(lambda: _request("POST", f"/api/orchestrations/{task_id}/message", body))
+
+
+def _retry_task(params: dict[str, Any], **_: Any) -> str:
+    task_id = urllib.parse.quote(str(params.get("task_id", "")), safe="")
+    body: dict[str, Any] = {}
+    if params.get("timeout_minutes") is not None:
+        body["timeoutMinutes"] = params["timeout_minutes"]
+    return _result(lambda: _request("POST", f"/api/orchestrations/{task_id}/retry", body))
 
 
 _LIST_PROJECTS_SCHEMA = {
@@ -149,6 +160,7 @@ _ROUTE_TASK_SCHEMA = {
             "use_worktree": {"type": "boolean", "default": True},
             "base_branch": {"type": "string"},
             "branch_name": {"type": "string"},
+            "timeout_minutes": {"type": "integer", "minimum": 1, "maximum": 240, "description": "Optional task-specific execution limit. Omit for the Board default (60 minutes)."},
             "idempotency_key": {"type": "string", "description": "Stable caller-provided key; normally omitted so the plugin derives one from session and request"},
             "origin": {"type": "object", "description": "Optional non-secret origin metadata"},
         },
@@ -172,6 +184,19 @@ _SEND_MESSAGE_SCHEMA = {
     },
 }
 
+_RETRY_TASK_SCHEMA = {
+    "name": "agent_board_retry_task",
+    "description": "Retry an existing failed or timed-out Agent Board task on the same tracked card, optionally with a longer execution limit.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string"},
+            "timeout_minutes": {"type": "integer", "minimum": 1, "maximum": 240},
+        },
+        "required": ["task_id"],
+    },
+}
+
 
 def register(ctx) -> None:
     ctx.register_tool(name="agent_board_list_projects", toolset="agent_board", schema=_LIST_PROJECTS_SCHEMA, handler=_list_projects, check_fn=_available, emoji="📋")
@@ -179,4 +204,5 @@ def register(ctx) -> None:
     ctx.register_tool(name="agent_board_route_task", toolset="agent_board", schema=_ROUTE_TASK_SCHEMA, handler=_route_task, check_fn=_available, emoji="🚀")
     ctx.register_tool(name="agent_board_get_task", toolset="agent_board", schema=_GET_TASK_SCHEMA, handler=_get_task, check_fn=_available, emoji="🔎")
     ctx.register_tool(name="agent_board_send_message", toolset="agent_board", schema=_SEND_MESSAGE_SCHEMA, handler=_send_message, check_fn=_available, emoji="💬")
+    ctx.register_tool(name="agent_board_retry_task", toolset="agent_board", schema=_RETRY_TASK_SCHEMA, handler=_retry_task, check_fn=_available, emoji="🔁")
     ctx.register_skill("agent-board-routing", Path(_SKILL_PATH))

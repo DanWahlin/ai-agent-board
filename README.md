@@ -8,6 +8,7 @@
   <a href="#getting-started">Getting Started</a> •
   <a href="#environment-variables">Environment Variables</a> •
   <a href="#tests">Tests</a> •
+  <a href="#development">Development</a> •
   <a href="#contributing">Contributing</a>
 </p>
 
@@ -245,6 +246,17 @@ The local pre-push hook in `.githooks/pre-push` runs `npm run gate:required`. Ru
 | Terminal UI | @xterm/xterm |
 | Monorepo | npm workspaces |
 | Dev Environment | Direct install (Linux, macOS, Windows) |
+
+## Development
+
+`npm run dev` starts the client and server together. Use `npm run dev:client` and `npm run dev:server` to run them separately. Run `npm run gate:required` before pushing.
+
+```bash
+npm run dev              # client + server
+npm run dev:server       # API only (port 8080)
+npm run dev:client       # Vite only (port 8081)
+npm run gate:required    # required before push
+```
 
 ## Contributing
 

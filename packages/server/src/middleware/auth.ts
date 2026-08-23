@@ -31,14 +31,14 @@ export function authenticateToken(token: string | undefined): { authenticated: b
 export function requiredScope(req: Request): ServiceScope | undefined {
   const p=req.path.length > 1 ? req.path.replace(/\/+$/, '') : req.path, method=req.method;
   if (p === '/health') return undefined;
-  if (p === '/agents') return undefined;
+  if (p === '/agents' && method === 'GET') return 'agents:read';
   if (p === '/agents/refresh') return 'agents:read';
-  if (p.startsWith('/projects')) return undefined;
+  if (method === 'GET' && (p === '/projects' || (/^\/projects\/[^/]+$/.test(p) && p !== '/projects/config'))) return 'projects:read';
   if (p === '/orchestrations' && method === 'POST') return 'orchestrations:create';
   if (/^\/orchestrations\/[^/]+\/retry$/.test(p) && method === 'POST') return 'orchestrations:create';
   if (/^\/orchestrations\/[^/]+$/.test(p) && method === 'GET') return 'orchestrations:read';
   if (/^\/orchestrations\/[^/]+\/message$/.test(p) && method === 'POST') return 'orchestrations:message';
-  if (/^\/tasks\/[^/]+\/relationships(?:\/[^/]+)?$/.test(p) && (method === 'POST' || method === 'DELETE')) return 'tasks:relationships';
+  if (/^\/tasks\/[^/]+\/relationships(?:\/[^/]+)?$/.test(p) && (method === 'GET' || method === 'POST' || method === 'DELETE')) return 'tasks:relationships';
   if (p.startsWith('/tasks') || p.startsWith('/groups')) {
     return undefined;
   }
@@ -64,13 +64,19 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     return;
   }
 
-  // A service-token-only deployment keeps the existing browser/API surface
-  // behind its outer access boundary, but requires scoped auth for the narrow
-  // orchestration facade and agent refresh mutation.
-  if (serviceCredentials.length === 0 || !scope) { next(); return; }
+  // A service-token-only deployment keeps unauthenticated ordinary reads for
+  // browsers behind the outer boundary. A presented bearer token is always a
+  // scoped service request and must have the exact route scope.
+  if (serviceCredentials.length === 0) { next(); return; }
+  const isRead = req.method === 'GET' || req.method === 'HEAD';
+  if (!token) {
+    if (!scope || isRead) { next(); return; }
+    res.status(401).json({ error: 'unauthorized' });
+    return;
+  }
   const auth = authenticateToken(token);
   if (!auth.authenticated) { res.status(401).json({ error: 'unauthorized' }); return; }
-  if (!auth.scopes.includes(scope)) { res.status(403).json({ error: 'forbidden' }); return; }
+  if (!scope || !auth.scopes.includes(scope)) { res.status(403).json({ error: 'forbidden' }); return; }
   next();
 }
 

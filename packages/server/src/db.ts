@@ -8,7 +8,7 @@ import fs from 'fs';
 const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), 'data', 'agentboard.db');
 const DATA_DIR = path.dirname(DB_PATH);
 
-function migrate(db: Database.Database): void {
+export function migrateSqliteDatabase(db: Database.Database): void {
   const now = Date.now();
 
   db.exec(`
@@ -209,6 +209,37 @@ function migrate(db: Database.Database): void {
   if (!attemptCols.some((column) => column.name === 'request_snapshot')) {
     db.exec(`ALTER TABLE execution_attempts ADD COLUMN request_snapshot TEXT NOT NULL DEFAULT '{}'`);
   }
+  // Backfill orchestration history for tasks that predate execution_attempts.
+  // The hex-encoded task id is stable, injective, and identifier-safe; the
+  // identity conflict plus NOT EXISTS makes this migration rerunnable.
+  db.exec(`
+    INSERT OR IGNORE INTO execution_attempts (
+      id, task_id, external_source, external_key, title_snapshot,
+      description_snapshot, agent_type, related_task_id, auto_start,
+      timeout_minutes, request_snapshot, status, created_at
+    )
+    SELECT
+      'legacy-task-' || lower(hex(CAST(t.id AS BLOB))),
+      t.id, t.external_source, t.external_key, t.title, t.description,
+      t.agent_type, NULL,
+      CASE WHEN t.run_requested_at IS NOT NULL THEN 1 ELSE 0 END,
+      t.timeout_minutes,
+      json_object(
+        'kind', 'legacy-task-backfill', 'taskId', t.id,
+        'externalSource', t.external_source, 'externalKey', t.external_key,
+        'title', t.title, 'description', t.description, 'agent', t.agent_type,
+        'timeoutMinutes', t.timeout_minutes,
+        'autoStart', CASE WHEN t.run_requested_at IS NOT NULL THEN json('true') ELSE json('false') END
+      ),
+      CASE WHEN t.run_requested_at IS NOT NULL THEN 'dispatched' ELSE 'pending' END,
+      t.created_at
+    FROM tasks t
+    WHERE t.external_source IS NOT NULL AND t.external_key IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM execution_attempts a
+        WHERE a.external_source = t.external_source AND a.external_key = t.external_key
+      )
+  `);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_execution_attempts_task ON execution_attempts(task_id, created_at)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_column_id ON tasks(column_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_agent_status ON tasks(agent_status)`);
@@ -383,7 +414,7 @@ export function initDatabase(): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 10000'); // wait up to 10s on lock contention
-  migrate(db);
+  migrateSqliteDatabase(db);
   console.log(`[db] initialized at ${DB_PATH}`);
   return db;
 }
@@ -588,6 +619,29 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
     )
   `);
   await pool.query(`ALTER TABLE execution_attempts ADD COLUMN IF NOT EXISTS request_snapshot TEXT NOT NULL DEFAULT '{}'`);
+  await pool.query(`
+    INSERT INTO execution_attempts (
+      id, task_id, external_source, external_key, title_snapshot,
+      description_snapshot, agent_type, related_task_id, auto_start,
+      timeout_minutes, request_snapshot, status, created_at
+    )
+    SELECT
+      'legacy-task-' || encode(convert_to(t.id, 'UTF8'), 'hex'),
+      t.id, t.external_source, t.external_key, t.title, t.description,
+      t.agent_type, NULL, (t.run_requested_at IS NOT NULL), t.timeout_minutes,
+      json_build_object(
+        'kind', 'legacy-task-backfill', 'taskId', t.id,
+        'externalSource', t.external_source, 'externalKey', t.external_key,
+        'title', t.title, 'description', t.description, 'agent', t.agent_type,
+        'timeoutMinutes', t.timeout_minutes,
+        'autoStart', (t.run_requested_at IS NOT NULL)
+      )::text,
+      CASE WHEN t.run_requested_at IS NOT NULL THEN 'dispatched' ELSE 'pending' END,
+      t.created_at
+    FROM tasks t
+    WHERE t.external_source IS NOT NULL AND t.external_key IS NOT NULL
+    ON CONFLICT (external_source, external_key) DO NOTHING
+  `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_execution_attempts_task ON execution_attempts(task_id, created_at)`);
 
   await pool.query(`

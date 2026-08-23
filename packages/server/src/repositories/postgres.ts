@@ -1,6 +1,6 @@
 import { Pool } from 'pg';
 import type { Task, Priority, ColumnId, AgentStatus, AgentType, AgentEvent, TaskRelationship, ExecutionAttempt } from '../types.js';
-import type { TaskRepository } from './types.js';
+import type { TaskRepository, ContinuationEligibility } from './types.js';
 import { isValidPriority, isValidColumnId, isValidAgentStatus, isValidAgentType } from '@ai-agent-board/shared/constants.js';
 import { errorMessage } from '../utils.js';
 
@@ -408,10 +408,15 @@ export class PostgresTaskRepository implements TaskRepository {
     } finally { client.release(); }
   }
 
-  async continueOrchestration(taskId: string, updates: Partial<Task>, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt = Date.now()) {
+  async continueOrchestration(taskId: string, updates: Partial<Task>, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt = Date.now(), eligibility?: ContinuationEligibility) {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      // Distinct idempotency keys still serialize on the task they reset.
+      await client.query(
+        'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+        [`task:${taskId}`],
+      );
       await client.query(
         'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
         [`${attempt.externalSource.length}:${attempt.externalSource}${attempt.externalKey}`],
@@ -434,6 +439,15 @@ export class PostgresTaskRepository implements TaskRepository {
         if (!replayTask) throw new Error('execution attempt references a missing task');
         await client.query('COMMIT');
         return { task: rowToTask(replayTask), attempt: replay, created: false };
+      }
+      if (eligibility?.requiredAgentStatus && current.agentStatus !== eligibility.requiredAgentStatus) {
+        await client.query('ROLLBACK');
+        return undefined;
+      }
+      if (eligibility?.requireRunnable
+        && (current.runRequestedAt !== undefined || current.agentStatus === 'planning' || current.agentStatus === 'executing')) {
+        await client.query('ROLLBACK');
+        return undefined;
       }
       if (relatedTaskId) await this.insertRelationshipWithClient(client, taskId, relatedTaskId, relationshipCreatedAt);
       const merged = { ...current, ...updates };

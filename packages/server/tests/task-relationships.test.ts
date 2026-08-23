@@ -286,6 +286,65 @@ test('SQLite orchestration aggregates roll back creates and continuations when r
   } finally { db.close(); }
 });
 
+test('SQLite continuation eligibility accepts only one distinct-key dispatch per task', async () => {
+  const db = makeDb();
+  const repo = new SqliteTaskRepository(db);
+  try {
+    await repo.create({ ...task('race-card'), agentStatus: 'failed' });
+    const updates = { agentStatus: 'idle' as const, columnId: 'in-progress' as const, runRequestedAt: 100 };
+    const [first, second] = await Promise.all([
+      repo.continueOrchestration('race-card', updates, { ...attempt('race-a', 'race-card', 'race-key-a'), autoStart: true, status: 'dispatched' }, undefined, 1,
+        { requiredAgentStatus: 'failed', requireRunnable: true }),
+      repo.continueOrchestration('race-card', updates, { ...attempt('race-b', 'race-card', 'race-key-b'), autoStart: true, status: 'dispatched' }, undefined, 1,
+        { requiredAgentStatus: 'failed', requireRunnable: true }),
+    ]);
+    assert.equal([first, second].filter(Boolean).length, 1);
+    assert.equal((await repo.getAttemptsByTaskId('race-card')).length, 1);
+    assert.equal((await repo.getById('race-card'))?.runRequestedAt, 100);
+  } finally { db.close(); }
+});
+
+test('Postgres continuation locks by task and revalidates eligibility before update', async () => {
+  const lockedTask = { ...task('pg-race'), agentStatus: 'idle' as const, runRequestedAt: 100 };
+  const taskRow = {
+    id: lockedTask.id, project_id: lockedTask.projectId, title: lockedTask.title, description: lockedTask.description,
+    priority: lockedTask.priority, column_id: lockedTask.columnId, agent_status: lockedTask.agentStatus,
+    agent_type: lockedTask.agentType, created_at: String(lockedTask.createdAt), started_at: null, completed_at: null,
+    repo_path: lockedTask.repoPath, branch_name: lockedTask.branchName, base_branch: lockedTask.baseBranch,
+    use_worktree: true, worktree_path: null, archived: false, group_id: null, group_order: null, summary: null,
+    external_source: null, external_key: null, provenance: null, run_requested_at: '100', run_claimed_at: null, timeout_minutes: null,
+  };
+  const proposed = { ...attempt('pg-race-attempt', lockedTask.id, 'pg-race-key'), autoStart: true, status: 'dispatched' as const };
+  const attemptRow = {
+    id: proposed.id, task_id: proposed.taskId, external_source: proposed.externalSource, external_key: proposed.externalKey,
+    title_snapshot: proposed.titleSnapshot, description_snapshot: proposed.descriptionSnapshot, agent_type: proposed.agentType,
+    related_task_id: null, auto_start: true, timeout_minutes: null, request_snapshot: proposed.requestSnapshot,
+    status: proposed.status, created_at: '1',
+  };
+  const calls: Array<{ sql: string; params?: unknown[] }> = [];
+  const client = {
+    query: async (sql: string, params?: unknown[]) => {
+      calls.push({ sql, params });
+      if (sql.startsWith('SELECT * FROM tasks WHERE id=$1 FOR UPDATE')) return { rows: [taskRow], rowCount: 1 };
+      if (sql.startsWith('INSERT INTO execution_attempts')) return { rows: [attemptRow], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
+    },
+    release: () => undefined,
+  };
+  const repo = new PostgresTaskRepository({ connect: async () => client } as never);
+  const result = await repo.continueOrchestration(lockedTask.id, { runRequestedAt: 200 }, proposed, undefined, 1, { requireRunnable: true });
+  assert.equal(result, undefined);
+  assert.deepEqual(calls.slice(0, 4).map(({ sql }) => sql), [
+    'BEGIN',
+    'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+    'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+    'SELECT * FROM tasks WHERE id=$1 FOR UPDATE',
+  ]);
+  assert.deepEqual(calls[1].params, ['task:pg-race']);
+  assert.equal(calls.some(({ sql }) => sql.startsWith('UPDATE tasks')), false);
+  assert.equal(calls.at(-1)?.sql, 'ROLLBACK');
+});
+
 test('Postgres repository canonicalizes relationship writes and replays conflicts', async () => {
   const calls: Array<{ sql: string; params?: unknown[] }> = [];
   let inserted = false;

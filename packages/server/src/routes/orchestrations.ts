@@ -214,9 +214,9 @@ export function createOrchestrationsRouter(
       timeoutMinutes,
       runRequestedAt: Date.now(),
       runClaimedAt: undefined,
-    }, expectedAttempt);
+    }, expectedAttempt, undefined, undefined, { requiredAgentStatus: 'failed', requireRunnable: true });
     if (!result) {
-      res.status(500).json({ error: 'failed to reset orchestration' });
+      res.status(409).json({ error: 'orchestration is no longer eligible for retry' });
       return;
     }
     if (!result.created) {
@@ -347,8 +347,8 @@ export function createOrchestrationsRouter(
         agentStatus: 'idle', columnId: autoStart ? 'in-progress' : 'backlog', archived: false,
         startedAt: undefined, completedAt: undefined, runRequestedAt: autoStart ? Date.now() : undefined,
         runClaimedAt: undefined, timeoutMinutes,
-      }, expectedAttempt, related?.id, Date.now());
-      if (!aggregate) { res.status(500).json({ error: 'failed to continue task' }); return; }
+      }, expectedAttempt, related?.id, Date.now(), autoStart ? { requireRunnable: true } : undefined);
+      if (!aggregate) { res.status(409).json({ error: 'task is no longer eligible to start' }); return; }
       if (!aggregate.created) {
         if (attemptConflicts(aggregate.attempt, expectedAttempt)) {
           res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' }); return;

@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import type { Task, Priority, ColumnId, AgentStatus, AgentType, AgentEvent, TaskRelationship, ExecutionAttempt } from '../types.js';
-import type { TaskRepository } from './types.js';
+import type { TaskRepository, ContinuationEligibility } from './types.js';
 import { errorMessage } from '../utils.js';
 
 interface TaskRow {
@@ -362,7 +362,9 @@ export class SqliteTaskRepository implements TaskRepository {
     })();
   }
 
-  async continueOrchestration(taskId: string, updates: Partial<Task>, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt = Date.now()) {
+  async continueOrchestration(taskId: string, updates: Partial<Task>, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt = Date.now(), eligibility?: ContinuationEligibility) {
+    // Acquire the writer lock before reading eligibility so separate SQLite
+    // connections cannot both decide from the same stale task snapshot.
     return this.db.transaction(() => {
       const taskRow = this.stmts.getById.get(taskId) as TaskRow | undefined;
       if (!taskRow) return undefined;
@@ -374,6 +376,10 @@ export class SqliteTaskRepository implements TaskRepository {
         if (!replayTaskRow) throw new Error('execution attempt references a missing task');
         return { task: rowToTask(replayTaskRow), attempt: replay, created: false };
       }
+      const current = rowToTask(taskRow);
+      if (eligibility?.requiredAgentStatus && current.agentStatus !== eligibility.requiredAgentStatus) return undefined;
+      if (eligibility?.requireRunnable
+        && (current.runRequestedAt !== undefined || current.agentStatus === 'planning' || current.agentStatus === 'executing')) return undefined;
       const persistedAttempt = { ...attempt, taskId };
       this.db.prepare(`INSERT INTO execution_attempts
         (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,request_snapshot,status,created_at)
@@ -381,11 +387,11 @@ export class SqliteTaskRepository implements TaskRepository {
           persistedAttempt.titleSnapshot, persistedAttempt.descriptionSnapshot, persistedAttempt.agentType, persistedAttempt.relatedTaskId ?? null,
           persistedAttempt.autoStart ? 1 : 0, persistedAttempt.timeoutMinutes ?? null, persistedAttempt.requestSnapshot, persistedAttempt.status, persistedAttempt.createdAt);
       if (relatedTaskId) this.insertRelationship(taskId, relatedTaskId, relationshipCreatedAt);
-      this.updateExisting(rowToTask(taskRow), updates);
+      this.updateExisting(current, updates);
       const updatedRow = this.stmts.getById.get(taskId) as TaskRow | undefined;
       if (!updatedRow) throw new Error('failed to reset orchestration task');
       return { task: rowToTask(updatedRow), attempt: persistedAttempt, created: true };
-    })();
+    }).immediate();
   }
 
   private insertRelationship(taskId: string, relatedTaskId: string, createdAt: number): void {

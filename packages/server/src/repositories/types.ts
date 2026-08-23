@@ -6,6 +6,13 @@ export interface OrchestrationAggregateResult {
   created: boolean;
 }
 
+export interface ContinuationEligibility {
+  /** Revalidated while the task is locked, not from a stale route read. */
+  requiredAgentStatus?: Task['agentStatus'];
+  /** Reject a second dispatch while a durable run request is outstanding. */
+  requireRunnable?: boolean;
+}
+
 export interface TaskRepository {
   getAll(includeArchived?: boolean, projectId?: string): Promise<Task[]>;
   getById(id: string): Promise<Task | undefined>;
@@ -35,5 +42,5 @@ export interface TaskRepository {
   /** Atomically persist a new task, its first attempt, and optional relationship. */
   createOrchestration(task: Task, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt?: number): Promise<OrchestrationAggregateResult>;
   /** Atomically persist an attempt, optional relationship, task reset, and run request. */
-  continueOrchestration(taskId: string, updates: Partial<Task>, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt?: number): Promise<OrchestrationAggregateResult | undefined>;
+  continueOrchestration(taskId: string, updates: Partial<Task>, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt?: number, eligibility?: ContinuationEligibility): Promise<OrchestrationAggregateResult | undefined>;
 }

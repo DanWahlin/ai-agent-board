@@ -7,7 +7,7 @@ import { SqliteTaskRepository } from '../src/repositories/sqlite.js';
 import { PostgresTaskRepository } from '../src/repositories/postgres.js';
 import { createTaskRouter } from '../src/routes/tasks.js';
 import { createOrchestrationsRouter } from '../src/routes/orchestrations.js';
-import type { Task, Project } from '../src/types.js';
+import type { Task, Project, ExecutionAttempt } from '../src/types.js';
 import type { ProjectRepository } from '../src/repositories/project-types.js';
 import type { AgentManager } from '../src/services/agent-manager.js';
 
@@ -28,7 +28,7 @@ function makeDb() {
     CREATE TABLE execution_attempts(id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
       external_source TEXT NOT NULL, external_key TEXT NOT NULL, title_snapshot TEXT NOT NULL, description_snapshot TEXT NOT NULL,
       agent_type TEXT NOT NULL, related_task_id TEXT, auto_start INTEGER NOT NULL, timeout_minutes INTEGER,
-      status TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(external_source, external_key));
+      request_snapshot TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(external_source, external_key));
   `);
   return db;
 }
@@ -38,6 +38,14 @@ const task = (id: string, projectId = 'project-a', title = id): Task => ({
   agentType: 'hermes', createdAt: Number(id.replace(/\D/g, '')) || 1, repoPath: '/repo', baseBranch: 'main',
   branchName: `agent/${id}`, useWorktree: true,
 });
+
+const attempt = (id: string, taskId: string, key = id): ExecutionAttempt => ({
+  id, taskId, externalSource: 'hermes', externalKey: key, titleSnapshot: taskId,
+  descriptionSnapshot: '', agentType: 'hermes', autoStart: false, requestSnapshot: '{}',
+  status: 'pending', createdAt: 1,
+});
+
+const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 const project: Project = { id: 'project-a', name: 'Project A', aliases: ['alpha'], repoPath: '/repo', isDefault: false, createdAt: 1, updatedAt: 1 };
 const projects = {
@@ -50,13 +58,14 @@ const agents = {
   stopAgent: () => undefined,
   clearEvents: () => undefined,
   sendMessage: async () => false,
+  startAgent: () => undefined,
 } as unknown as AgentManager;
 
-async function withApi(repo: SqliteTaskRepository, run: (base: string) => Promise<void>) {
+async function withApi(repo: SqliteTaskRepository, run: (base: string) => Promise<void>, manager: AgentManager = agents) {
   const app = express();
   app.use(express.json());
-  app.use('/api/tasks', createTaskRouter(repo, agents, projects));
-  app.use('/api/orchestrations', createOrchestrationsRouter(repo, projects, agents));
+  app.use('/api/tasks', createTaskRouter(repo, manager, projects));
+  app.use('/api/orchestrations', createOrchestrationsRouter(repo, projects, manager));
   const server = createServer(app);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -120,6 +129,8 @@ test('orchestration persists distinct attempts, replays continuations, and track
   try {
     await repo.create(task('existing', 'project-a', 'Existing work'));
     await repo.create(task('other', 'project-a', 'Other work'));
+    const messages: Array<[string, string]> = [];
+    const manager = { ...agents, sendMessage: async (taskId: string, message: string) => { messages.push([taskId, message]); return true; } } as unknown as AgentManager;
     await withApi(repo, async (base) => {
       let response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'new-work-1' }, body: JSON.stringify({ project: 'alpha', agent: 'hermes', title: 'New work', relatedItem: 'existing', autoStart: false }) });
       assert.equal(response.status, 201);
@@ -141,11 +152,15 @@ test('orchestration persists distinct attempts, replays continuations, and track
       assert.equal(((await response.json()) as { attempt: { id: string } }).attempt.id, continued.attempt.id);
       assert.equal((await repo.getAttemptsByTaskId('existing')).length, 1);
 
+      response = await fetch(`${base}/api/orchestrations/existing/message`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: '  status please  ' }) });
+      assert.equal(response.status, 200);
+      assert.deepEqual(messages, [['existing', 'status please']]);
+
       response = await fetch(`${base}/api/orchestrations/existing`);
       assert.equal(response.status, 200);
       assert.equal(((await response.json()) as { contract: { attemptId: string } }).contract.attemptId, continued.attempt.id);
       assert.equal(await repo.count(), 3);
-    });
+    }, manager);
   } finally { db.close(); }
 });
 
@@ -172,6 +187,103 @@ test('orchestration idempotency binds related item and validation has no relatio
   } finally { db.close(); }
 });
 
+test('retry requires idempotency, creates one attempt, and never redispatches a replay or conflict', async () => {
+  const db = makeDb();
+  const repo = new SqliteTaskRepository(db);
+  let dispatches = 0;
+  const manager = { ...agents, startAgent: () => { dispatches += 1; } } as unknown as AgentManager;
+  try {
+    await repo.create(task('retry-card', 'project-a', 'Retry card'));
+    await withApi(repo, async (base) => {
+      let response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'initial-attempt' }, body: JSON.stringify({ project: 'alpha', task: 'retry-card', description: 'failed work', autoStart: false }) });
+      assert.equal(response.status, 202);
+      const initial = await response.json() as { attempt: ExecutionAttempt };
+      await repo.update('retry-card', { agentStatus: 'failed' });
+
+      response = await fetch(`${base}/api/orchestrations/retry-card/retry`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+      assert.equal(response.status, 400);
+      assert.match((await response.json() as { error: string }).error, /Idempotency-Key/);
+
+      const retryHeaders = { 'content-type': 'application/json', 'idempotency-key': 'retry-attempt' };
+      response = await fetch(`${base}/api/orchestrations/retry-card/retry`, { method: 'POST', headers: retryHeaders, body: JSON.stringify({ provenance: { sourceSession: 'one' } }) });
+      assert.equal(response.status, 202);
+      const retried = await response.json() as { attempt: ExecutionAttempt };
+      assert.notEqual(retried.attempt.id, initial.attempt.id);
+      await nextTurn();
+      assert.equal(dispatches, 1);
+      assert.equal((await repo.getAttemptsByTaskId('retry-card')).length, 2);
+
+      response = await fetch(`${base}/api/orchestrations/retry-card/retry`, { method: 'POST', headers: retryHeaders, body: JSON.stringify({ provenance: { sourceSession: 'one' } }) });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('idempotent-replay'), 'true');
+      assert.equal((await response.json() as { attempt: ExecutionAttempt }).attempt.id, retried.attempt.id);
+      await nextTurn();
+      assert.equal(dispatches, 1);
+      assert.equal((await repo.getAttemptsByTaskId('retry-card')).length, 2);
+
+      response = await fetch(`${base}/api/orchestrations/retry-card/retry`, { method: 'POST', headers: retryHeaders, body: JSON.stringify({ provenance: { sourceSession: 'changed' } }) });
+      assert.equal(response.status, 409);
+      await nextTurn();
+      assert.equal(dispatches, 1);
+      assert.equal((await repo.getAttemptsByTaskId('retry-card')).length, 2);
+    }, manager);
+  } finally { db.close(); }
+});
+
+test('request snapshots reject create and continuation replays with changed priority or provenance', async () => {
+  const db = makeDb();
+  const repo = new SqliteTaskRepository(db);
+  try {
+    await repo.create(task('snapshot-card', 'project-a', 'Snapshot card'));
+    await withApi(repo, async (base) => {
+      for (const [key, changed] of [
+        ['create-priority', { priority: 'high' }],
+        ['create-provenance', { provenance: { sourceSession: 'changed' } }],
+      ] as const) {
+        const original = { project: 'alpha', agent: 'hermes', title: `Create ${key}`, autoStart: false, priority: 'medium', provenance: { sourceSession: 'original' } };
+        const headers = { 'content-type': 'application/json', 'idempotency-key': key };
+        let response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers, body: JSON.stringify(original) });
+        assert.equal(response.status, 201);
+        response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers, body: JSON.stringify({ ...original, ...changed }) });
+        assert.equal(response.status, 409, key);
+      }
+
+      for (const [key, changed] of [
+        ['continue-priority', { priority: 'high' }],
+        ['continue-provenance', { provenance: { sourceSession: 'changed' } }],
+      ] as const) {
+        const original = { project: 'alpha', task: 'snapshot-card', description: key, autoStart: false, priority: 'medium', provenance: { sourceSession: 'original' } };
+        const headers = { 'content-type': 'application/json', 'idempotency-key': key };
+        let response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers, body: JSON.stringify(original) });
+        assert.equal(response.status, 202);
+        response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers, body: JSON.stringify({ ...original, ...changed }) });
+        assert.equal(response.status, 409, key);
+      }
+    });
+  } finally { db.close(); }
+});
+
+test('SQLite orchestration aggregates roll back creates and continuations when relationship insertion fails', async () => {
+  const db = makeDb();
+  const repo = new SqliteTaskRepository(db);
+  try {
+    await repo.create(task('same-project'));
+    await repo.create(task('other-project', 'project-b'));
+
+    const createdTask = { ...task('aggregate-create'), externalSource: 'hermes', externalKey: 'aggregate-create' };
+    await assert.rejects(repo.createOrchestration(createdTask, attempt('create-attempt', createdTask.id, 'aggregate-create'), 'other-project', 10), /same project/);
+    assert.equal(await repo.getById(createdTask.id), undefined);
+    assert.equal(await repo.getAttemptById('create-attempt'), undefined);
+    assert.deepEqual(await repo.getRelationships('other-project'), []);
+
+    const before = await repo.getById('same-project');
+    await assert.rejects(repo.continueOrchestration('same-project', { title: 'should roll back', priority: 'high' }, attempt('continue-attempt', 'same-project', 'aggregate-continue'), 'other-project', 11), /same project/);
+    assert.deepEqual(await repo.getById('same-project'), before);
+    assert.equal(await repo.getAttemptById('continue-attempt'), undefined);
+    assert.deepEqual(await repo.getRelationships('same-project'), []);
+  } finally { db.close(); }
+});
+
 test('Postgres repository canonicalizes relationship writes and replays conflicts', async () => {
   const calls: Array<{ sql: string; params?: unknown[] }> = [];
   let inserted = false;
@@ -192,4 +304,51 @@ test('Postgres repository canonicalizes relationship writes and replays conflict
   const inserts = calls.filter(({ sql }) => sql.startsWith('INSERT INTO task_relationships'));
   assert.deepEqual(inserts[0].params, ['a-task', 'z-task', 44]);
   assert.match(inserts[0].sql, /a\.project_id=b\.project_id/);
+});
+
+test('Postgres orchestration aggregate commits successful work and rolls back relation failures', async () => {
+  const aggregateTask = { ...task('pg-task'), externalSource: 'hermes', externalKey: 'pg-key' };
+  const aggregateAttempt = attempt('pg-attempt', aggregateTask.id, 'pg-key');
+  const taskRow = {
+    id: aggregateTask.id, project_id: aggregateTask.projectId, title: aggregateTask.title, description: aggregateTask.description,
+    priority: aggregateTask.priority, column_id: aggregateTask.columnId, agent_status: aggregateTask.agentStatus,
+    agent_type: aggregateTask.agentType, created_at: String(aggregateTask.createdAt), started_at: null, completed_at: null,
+    repo_path: aggregateTask.repoPath, branch_name: aggregateTask.branchName, base_branch: aggregateTask.baseBranch,
+    use_worktree: true, worktree_path: null, archived: false, group_id: null, group_order: null, summary: null,
+    external_source: aggregateTask.externalSource, external_key: aggregateTask.externalKey, provenance: null,
+    run_requested_at: null, run_claimed_at: null, timeout_minutes: null,
+  };
+  const attemptRow = {
+    id: aggregateAttempt.id, task_id: aggregateTask.id, external_source: aggregateAttempt.externalSource,
+    external_key: aggregateAttempt.externalKey, title_snapshot: aggregateAttempt.titleSnapshot,
+    description_snapshot: aggregateAttempt.descriptionSnapshot, agent_type: aggregateAttempt.agentType,
+    related_task_id: null, auto_start: false, timeout_minutes: null, request_snapshot: aggregateAttempt.requestSnapshot,
+    status: aggregateAttempt.status, created_at: String(aggregateAttempt.createdAt),
+  };
+
+  for (const relationSucceeds of [true, false]) {
+    const calls: string[] = [];
+    let released = false;
+    const client = {
+      query: async (sql: string) => {
+        calls.push(sql);
+        if (sql.startsWith('INSERT INTO tasks')) return { rows: [taskRow], rowCount: 1 };
+        if (sql.startsWith('INSERT INTO execution_attempts')) return { rows: [attemptRow], rowCount: 1 };
+        if (sql.startsWith('INSERT INTO task_relationships')) return { rows: relationSucceeds ? [{ created_at: '7' }] : [], rowCount: relationSucceeds ? 1 : 0 };
+        if (sql.startsWith('SELECT 1 FROM task_relationships')) return { rows: [], rowCount: 0 };
+        return { rows: [], rowCount: 0 };
+      },
+      release: () => { released = true; },
+    };
+    const repo = new PostgresTaskRepository({ connect: async () => client } as never);
+    if (relationSucceeds) {
+      const result = await repo.createOrchestration(aggregateTask, aggregateAttempt, 'related-task', 7);
+      assert.equal(result.created, true);
+      assert.deepEqual(calls.filter((sql) => ['BEGIN', 'COMMIT', 'ROLLBACK'].includes(sql)), ['BEGIN', 'COMMIT']);
+    } else {
+      await assert.rejects(repo.createOrchestration(aggregateTask, aggregateAttempt, 'cross-project-task', 7), /same project/);
+      assert.deepEqual(calls.filter((sql) => ['BEGIN', 'COMMIT', 'ROLLBACK'].includes(sql)), ['BEGIN', 'ROLLBACK']);
+    }
+    assert.equal(released, true);
+  }
 });

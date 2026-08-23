@@ -29,7 +29,7 @@ export function authenticateToken(token: string | undefined): { authenticated: b
 }
 
 export function requiredScope(req: Request): ServiceScope | undefined {
-  const p=req.path, method=req.method;
+  const p=req.path.length > 1 ? req.path.replace(/\/+$/, '') : req.path, method=req.method;
   if (p === '/health') return undefined;
   if (p === '/agents') return undefined;
   if (p === '/agents/refresh') return 'agents:read';

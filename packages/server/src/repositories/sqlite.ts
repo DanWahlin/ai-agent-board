@@ -62,6 +62,7 @@ interface AttemptRow {
   id: string; task_id: string; external_source: string; external_key: string;
   title_snapshot: string; description_snapshot: string; agent_type: AgentType;
   related_task_id: string | null; auto_start: number; timeout_minutes: number | null;
+  request_snapshot: string;
   status: ExecutionAttempt['status']; created_at: number;
 }
 
@@ -69,7 +70,8 @@ function rowToAttempt(row: AttemptRow): ExecutionAttempt {
   return { id: row.id, taskId: row.task_id, externalSource: row.external_source, externalKey: row.external_key,
     titleSnapshot: row.title_snapshot, descriptionSnapshot: row.description_snapshot, agentType: row.agent_type,
     relatedTaskId: row.related_task_id ?? undefined, autoStart: Boolean(row.auto_start),
-    timeoutMinutes: row.timeout_minutes ?? undefined, status: row.status, createdAt: row.created_at };
+    timeoutMinutes: row.timeout_minutes ?? undefined, requestSnapshot: row.request_snapshot,
+    status: row.status, createdAt: row.created_at };
 }
 
 export class SqliteTaskRepository implements TaskRepository {
@@ -155,6 +157,11 @@ export class SqliteTaskRepository implements TaskRepository {
   }
 
   async create(task: Task): Promise<Task> {
+    this.insertTask(task);
+    return task;
+  }
+
+  private insertTask(task: Task): void {
     this.stmts.insert.run({
       id: task.id,
       project_id: task.projectId,
@@ -179,7 +186,6 @@ export class SqliteTaskRepository implements TaskRepository {
       provenance: task.provenance ? JSON.stringify(task.provenance) : null, run_requested_at: task.runRequestedAt ?? null, run_claimed_at: task.runClaimedAt ?? null,
       timeout_minutes: task.timeoutMinutes ?? null,
     });
-    return task;
   }
 
   async createIdempotent(task: Task): Promise<{ task: Task; created: boolean }> {
@@ -199,9 +205,14 @@ export class SqliteTaskRepository implements TaskRepository {
       const row = this.stmts.getById.get(id) as TaskRow | undefined;
       const existing = row ? rowToTask(row) : undefined;
       if (!existing) return undefined;
+      return this.updateExisting(existing, updates);
+    })();
+  }
+
+  private updateExisting(existing: Task, updates: Partial<Task>): Task {
       const merged = { ...existing, ...updates };
       this.stmts.update.run({
-        id,
+        id: existing.id,
         title: merged.title,
         description: merged.description,
         priority: merged.priority,
@@ -220,7 +231,6 @@ export class SqliteTaskRepository implements TaskRepository {
         timeout_minutes: merged.timeoutMinutes ?? null,
       });
       return merged;
-    })();
   }
 
   async delete(id: string): Promise<boolean> {
@@ -319,13 +329,71 @@ export class SqliteTaskRepository implements TaskRepository {
 
   async createAttemptIdempotent(attempt: ExecutionAttempt): Promise<{ attempt: ExecutionAttempt; created: boolean }> {
     const result = this.db.prepare(`INSERT OR IGNORE INTO execution_attempts
-      (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,status,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(attempt.id, attempt.taskId, attempt.externalSource, attempt.externalKey,
+      (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,request_snapshot,status,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(attempt.id, attempt.taskId, attempt.externalSource, attempt.externalKey,
         attempt.titleSnapshot, attempt.descriptionSnapshot, attempt.agentType, attempt.relatedTaskId ?? null,
-        attempt.autoStart ? 1 : 0, attempt.timeoutMinutes ?? null, attempt.status, attempt.createdAt);
+        attempt.autoStart ? 1 : 0, attempt.timeoutMinutes ?? null, attempt.requestSnapshot, attempt.status, attempt.createdAt);
     if (result.changes) return { attempt, created: true };
     const existing = await this.getAttemptByExternalIdentity(attempt.externalSource, attempt.externalKey);
     if (!existing) throw new Error('failed to persist execution attempt');
     return { attempt: existing, created: false };
+  }
+
+  async createOrchestration(task: Task, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt = Date.now()) {
+    return this.db.transaction(() => {
+      const replayRow = this.db.prepare('SELECT * FROM execution_attempts WHERE external_source=? AND external_key=?')
+        .get(attempt.externalSource, attempt.externalKey) as AttemptRow | undefined;
+      if (replayRow) {
+        const replay = rowToAttempt(replayRow);
+        const taskRow = this.stmts.getById.get(replay.taskId) as TaskRow | undefined;
+        if (!taskRow) throw new Error('execution attempt references a missing task');
+        return { task: rowToTask(taskRow), attempt: replay, created: false };
+      }
+      this.insertTask(task);
+      const persistedAttempt = { ...attempt, taskId: task.id };
+      const inserted = this.db.prepare(`INSERT INTO execution_attempts
+        (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,request_snapshot,status,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(persistedAttempt.id, persistedAttempt.taskId, persistedAttempt.externalSource, persistedAttempt.externalKey,
+          persistedAttempt.titleSnapshot, persistedAttempt.descriptionSnapshot, persistedAttempt.agentType, persistedAttempt.relatedTaskId ?? null,
+          persistedAttempt.autoStart ? 1 : 0, persistedAttempt.timeoutMinutes ?? null, persistedAttempt.requestSnapshot, persistedAttempt.status, persistedAttempt.createdAt);
+      if (inserted.changes !== 1) throw new Error('failed to persist execution attempt');
+      if (relatedTaskId) this.insertRelationship(task.id, relatedTaskId, relationshipCreatedAt);
+      return { task, attempt: persistedAttempt, created: true };
+    })();
+  }
+
+  async continueOrchestration(taskId: string, updates: Partial<Task>, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt = Date.now()) {
+    return this.db.transaction(() => {
+      const taskRow = this.stmts.getById.get(taskId) as TaskRow | undefined;
+      if (!taskRow) return undefined;
+      const replayRow = this.db.prepare('SELECT * FROM execution_attempts WHERE external_source=? AND external_key=?')
+        .get(attempt.externalSource, attempt.externalKey) as AttemptRow | undefined;
+      if (replayRow) {
+        const replay = rowToAttempt(replayRow);
+        const replayTaskRow = this.stmts.getById.get(replay.taskId) as TaskRow | undefined;
+        if (!replayTaskRow) throw new Error('execution attempt references a missing task');
+        return { task: rowToTask(replayTaskRow), attempt: replay, created: false };
+      }
+      const persistedAttempt = { ...attempt, taskId };
+      this.db.prepare(`INSERT INTO execution_attempts
+        (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,request_snapshot,status,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(persistedAttempt.id, taskId, persistedAttempt.externalSource, persistedAttempt.externalKey,
+          persistedAttempt.titleSnapshot, persistedAttempt.descriptionSnapshot, persistedAttempt.agentType, persistedAttempt.relatedTaskId ?? null,
+          persistedAttempt.autoStart ? 1 : 0, persistedAttempt.timeoutMinutes ?? null, persistedAttempt.requestSnapshot, persistedAttempt.status, persistedAttempt.createdAt);
+      if (relatedTaskId) this.insertRelationship(taskId, relatedTaskId, relationshipCreatedAt);
+      this.updateExisting(rowToTask(taskRow), updates);
+      const updatedRow = this.stmts.getById.get(taskId) as TaskRow | undefined;
+      if (!updatedRow) throw new Error('failed to reset orchestration task');
+      return { task: rowToTask(updatedRow), attempt: persistedAttempt, created: true };
+    })();
+  }
+
+  private insertRelationship(taskId: string, relatedTaskId: string, createdAt: number): void {
+    if (taskId === relatedTaskId) throw new Error('a task cannot be related to itself');
+    const [left, right] = taskId < relatedTaskId ? [taskId, relatedTaskId] : [relatedTaskId, taskId];
+    this.db.prepare(`INSERT OR IGNORE INTO task_relationships (task_id, related_task_id, type, created_at)
+      SELECT ?, ?, 'related', ? FROM tasks a JOIN tasks b ON b.id = ? WHERE a.id = ? AND a.project_id = b.project_id`).run(left, right, createdAt, right, left);
+    const exists = this.db.prepare('SELECT 1 FROM task_relationships WHERE task_id=? AND related_task_id=?').get(left, right);
+    if (!exists) throw new Error('tasks must exist in the same project');
   }
 }

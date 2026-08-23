@@ -83,6 +83,7 @@ interface AttemptRow {
   id: string; task_id: string; external_source: string; external_key: string;
   title_snapshot: string; description_snapshot: string; agent_type: AgentType;
   related_task_id: string | null; auto_start: boolean; timeout_minutes: number | null;
+  request_snapshot: string;
   status: ExecutionAttempt['status']; created_at: string;
 }
 
@@ -90,7 +91,8 @@ function rowToAttempt(row: AttemptRow): ExecutionAttempt {
   return { id: row.id, taskId: row.task_id, externalSource: row.external_source, externalKey: row.external_key,
     titleSnapshot: row.title_snapshot, descriptionSnapshot: row.description_snapshot, agentType: row.agent_type,
     relatedTaskId: row.related_task_id ?? undefined, autoStart: row.auto_start,
-    timeoutMinutes: row.timeout_minutes ?? undefined, status: row.status, createdAt: Number(row.created_at) };
+    timeoutMinutes: row.timeout_minutes ?? undefined, requestSnapshot: row.request_snapshot,
+    status: row.status, createdAt: Number(row.created_at) };
 }
 
 export class PostgresTaskRepository implements TaskRepository {
@@ -332,14 +334,111 @@ export class PostgresTaskRepository implements TaskRepository {
 
   async createAttemptIdempotent(attempt: ExecutionAttempt): Promise<{ attempt: ExecutionAttempt; created: boolean }> {
     const { rows } = await this.pool.query<AttemptRow>(`INSERT INTO execution_attempts
-      (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,status,created_at)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+      (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,request_snapshot,status,created_at)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
       ON CONFLICT(external_source,external_key) DO NOTHING RETURNING *`,
       [attempt.id,attempt.taskId,attempt.externalSource,attempt.externalKey,attempt.titleSnapshot,attempt.descriptionSnapshot,
-        attempt.agentType,attempt.relatedTaskId ?? null,attempt.autoStart,attempt.timeoutMinutes ?? null,attempt.status,attempt.createdAt]);
+        attempt.agentType,attempt.relatedTaskId ?? null,attempt.autoStart,attempt.timeoutMinutes ?? null,attempt.requestSnapshot,attempt.status,attempt.createdAt]);
     if (rows[0]) return { attempt: rowToAttempt(rows[0]), created: true };
     const existing = await this.getAttemptByExternalIdentity(attempt.externalSource, attempt.externalKey);
     if (!existing) throw new Error('failed to persist execution attempt');
     return { attempt: existing, created: false };
+  }
+
+  async createOrchestration(task: Task, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt = Date.now()) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const taskInsert = await client.query<TaskRow>(`INSERT INTO tasks (id,project_id,title,description,priority,column_id,agent_status,agent_type,
+        created_at,started_at,completed_at,repo_path,branch_name,base_branch,use_worktree,worktree_path,archived,group_id,group_order,summary,
+        external_source,external_key,provenance,run_requested_at,run_claimed_at,timeout_minutes)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+        ON CONFLICT(external_source,external_key) DO NOTHING RETURNING *`, [task.id,task.projectId,task.title,task.description,task.priority,task.columnId,
+        task.agentStatus,task.agentType ?? 'copilot',task.createdAt,task.startedAt ?? null,task.completedAt ?? null,task.repoPath ?? null,
+        task.branchName ?? null,task.baseBranch ?? null,task.useWorktree ?? null,task.worktreePath ?? null,task.archived ?? false,task.groupId ?? null,
+        task.groupOrder ?? null,task.summary ?? null,task.externalSource ?? null,task.externalKey ?? null,task.provenance ? JSON.stringify(task.provenance) : null,
+        task.runRequestedAt ?? null,task.runClaimedAt ?? null,task.timeoutMinutes ?? null]);
+      let persistedTask = taskInsert.rows[0] ? rowToTask(taskInsert.rows[0]) : undefined;
+      if (!persistedTask) {
+        const existingTask = await client.query<TaskRow>('SELECT * FROM tasks WHERE external_source=$1 AND external_key=$2 FOR UPDATE', [task.externalSource,task.externalKey]);
+        persistedTask = existingTask.rows[0] ? rowToTask(existingTask.rows[0]) : undefined;
+      }
+      if (!persistedTask) throw new Error('failed to persist orchestration task');
+      const persistedAttempt = { ...attempt, taskId: persistedTask.id };
+      const attemptInsert = await client.query<AttemptRow>(`INSERT INTO execution_attempts
+        (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,request_snapshot,status,created_at)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        ON CONFLICT(external_source,external_key) DO NOTHING RETURNING *`, [persistedAttempt.id,persistedAttempt.taskId,persistedAttempt.externalSource,
+        persistedAttempt.externalKey,persistedAttempt.titleSnapshot,persistedAttempt.descriptionSnapshot,persistedAttempt.agentType,
+        persistedAttempt.relatedTaskId ?? null,persistedAttempt.autoStart,persistedAttempt.timeoutMinutes ?? null,persistedAttempt.requestSnapshot,
+        persistedAttempt.status,persistedAttempt.createdAt]);
+      if (!attemptInsert.rows[0]) {
+        const replayResult = await client.query<AttemptRow>('SELECT * FROM execution_attempts WHERE external_source=$1 AND external_key=$2', [attempt.externalSource,attempt.externalKey]);
+        const replay = replayResult.rows[0] ? rowToAttempt(replayResult.rows[0]) : undefined;
+        if (!replay) throw new Error('failed to persist execution attempt');
+        const replayTaskResult = await client.query<TaskRow>('SELECT * FROM tasks WHERE id=$1', [replay.taskId]);
+        if (!replayTaskResult.rows[0]) throw new Error('execution attempt references a missing task');
+        await client.query('COMMIT');
+        return { task: rowToTask(replayTaskResult.rows[0]), attempt: replay, created: false };
+      }
+      if (relatedTaskId) await this.insertRelationshipWithClient(client, persistedTask.id, relatedTaskId, relationshipCreatedAt);
+      await client.query('COMMIT');
+      return { task: persistedTask, attempt: rowToAttempt(attemptInsert.rows[0]), created: true };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally { client.release(); }
+  }
+
+  async continueOrchestration(taskId: string, updates: Partial<Task>, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt = Date.now()) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const currentResult = await client.query<TaskRow>('SELECT * FROM tasks WHERE id=$1 FOR UPDATE', [taskId]);
+      if (!currentResult.rows[0]) { await client.query('ROLLBACK'); return undefined; }
+      const current = rowToTask(currentResult.rows[0]);
+      const persistedAttempt = { ...attempt, taskId };
+      const attemptInsert = await client.query<AttemptRow>(`INSERT INTO execution_attempts
+        (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,request_snapshot,status,created_at)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        ON CONFLICT(external_source,external_key) DO NOTHING RETURNING *`, [persistedAttempt.id,taskId,persistedAttempt.externalSource,persistedAttempt.externalKey,
+        persistedAttempt.titleSnapshot,persistedAttempt.descriptionSnapshot,persistedAttempt.agentType,persistedAttempt.relatedTaskId ?? null,
+        persistedAttempt.autoStart,persistedAttempt.timeoutMinutes ?? null,persistedAttempt.requestSnapshot,persistedAttempt.status,persistedAttempt.createdAt]);
+      if (!attemptInsert.rows[0]) {
+        const replayResult = await client.query<AttemptRow>('SELECT * FROM execution_attempts WHERE external_source=$1 AND external_key=$2', [attempt.externalSource,attempt.externalKey]);
+        const replay = replayResult.rows[0] ? rowToAttempt(replayResult.rows[0]) : undefined;
+        if (!replay) throw new Error('failed to persist execution attempt');
+        const replayTask = replay.taskId === current.id ? currentResult.rows[0] : (await client.query<TaskRow>('SELECT * FROM tasks WHERE id=$1', [replay.taskId])).rows[0];
+        if (!replayTask) throw new Error('execution attempt references a missing task');
+        await client.query('COMMIT');
+        return { task: rowToTask(replayTask), attempt: replay, created: false };
+      }
+      if (relatedTaskId) await this.insertRelationshipWithClient(client, taskId, relatedTaskId, relationshipCreatedAt);
+      const merged = { ...current, ...updates };
+      const updated = await client.query<TaskRow>(`UPDATE tasks SET title=$1,description=$2,priority=$3,column_id=$4,agent_status=$5,agent_type=$6,
+        started_at=$7,completed_at=$8,repo_path=$9,branch_name=$10,base_branch=$11,use_worktree=$12,worktree_path=$13,archived=$14,
+        summary=$15,run_requested_at=$16,run_claimed_at=$17,timeout_minutes=$18 WHERE id=$19 RETURNING *`, [merged.title,merged.description,
+        merged.priority,merged.columnId,merged.agentStatus,merged.agentType,merged.startedAt ?? null,merged.completedAt ?? null,merged.repoPath ?? null,
+        merged.branchName ?? null,merged.baseBranch ?? null,merged.useWorktree ?? null,merged.worktreePath ?? null,merged.archived ?? false,
+        merged.summary ?? null,merged.runRequestedAt ?? null,merged.runClaimedAt ?? null,merged.timeoutMinutes ?? null,taskId]);
+      if (!updated.rows[0]) throw new Error('failed to reset orchestration task');
+      await client.query('COMMIT');
+      return { task: rowToTask(updated.rows[0]), attempt: rowToAttempt(attemptInsert.rows[0]), created: true };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally { client.release(); }
+  }
+
+  private async insertRelationshipWithClient(client: { query: Function }, taskId: string, relatedTaskId: string, createdAt: number): Promise<void> {
+    if (taskId === relatedTaskId) throw new Error('a task cannot be related to itself');
+    const [left,right] = taskId < relatedTaskId ? [taskId,relatedTaskId] : [relatedTaskId,taskId];
+    const result = await client.query(`INSERT INTO task_relationships(task_id,related_task_id,type,created_at)
+      SELECT $1,$2,'related',$3 FROM tasks a JOIN tasks b ON b.id=$2 WHERE a.id=$1 AND a.project_id=b.project_id
+      ON CONFLICT(task_id,related_task_id) DO NOTHING RETURNING created_at`, [left,right,createdAt]);
+    if (!result.rows[0]) {
+      const existing = await client.query('SELECT 1 FROM task_relationships WHERE task_id=$1 AND related_task_id=$2', [left,right]);
+      if (!existing.rows[0]) throw new Error('tasks must exist in the same project');
+    }
   }
 }

@@ -1,4 +1,4 @@
-import { test, expect, devices, request as apiRequest, type Page } from '@playwright/test';
+import { test, expect, devices, request as apiRequest, type Locator, type Page } from '@playwright/test';
 import { mkdirSync } from 'fs';
 import path from 'path';
 import { API, waitForBoard } from './helpers';
@@ -18,6 +18,7 @@ const FIXTURE_PREFIX = 'MobileFixture';
 const LONG_TITLE = `${FIXTURE_PREFIX} Backlog with an intentionally very long task title that must wrap or truncate without breaking layout`;
 const IN_PROGRESS_TITLE = `${FIXTURE_PREFIX} InProgress agent task`;
 const REVIEW_TITLE = `${FIXTURE_PREFIX} Review task`;
+const COMPLETED_WORKTREE_TITLE = `${FIXTURE_PREFIX} Completed worktree task`;
 const LONG_DESCRIPTION = [
   'A long markdown description used to verify the expanded task description scroller.',
   '',
@@ -63,6 +64,25 @@ async function seedFixture(requestCtx: any) {
     seededIds.push(created.id);
     await requestCtx.patch(`${API}/api/tasks/${created.id}`, { data: { columnId: 'review' } });
   }
+
+  const existingCompleted = byTitle.get(COMPLETED_WORKTREE_TITLE);
+  if (!existingCompleted) {
+    const res = await requestCtx.post(`${API}/api/tasks`, {
+      data: { title: COMPLETED_WORKTREE_TITLE, description: LONG_DESCRIPTION, columnId: 'in-progress' },
+    });
+    const created = await res.json();
+    seededIds.push(created.id);
+    await requestCtx.post(`${API}/api/tasks/${created.id}/configure`, {
+      data: {
+        repoPath: process.cwd(),
+        useWorktree: true,
+        branchName: 'mobile/completed-worktree-fixture',
+        baseBranch: 'main',
+      },
+    });
+    await requestCtx.patch(`${API}/api/tasks/${created.id}`, { data: { agentStatus: 'complete' } });
+  }
+
 }
 
 test.afterAll(async () => {
@@ -93,6 +113,13 @@ async function openTaskDrawer(page: Page, title: string) {
   await heading.scrollIntoViewIfNeeded();
   await heading.click();
   await expect(page.locator('#agent-panel')).toBeVisible({ timeout: 5_000 });
+}
+
+async function expectTouchTarget(locator: Locator) {
+  const box = await locator.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.width).toBeGreaterThanOrEqual(44);
+  expect(box!.height).toBeGreaterThanOrEqual(44);
 }
 
 for (const vp of MOBILE_VIEWPORTS) {
@@ -131,6 +158,28 @@ for (const vp of MOBILE_VIEWPORTS) {
         expect(box!.width).toBeLessThanOrEqual(vp.width);
         expect(box!.width).toBeGreaterThan(0);
       }
+    });
+
+    test('a real horizontal touch swipe advances the board rail', async ({ page }) => {
+      const rail = page.locator('[data-board-rail]');
+      const box = await rail.boundingBox();
+      expect(box).not.toBeNull();
+      const y = box!.y + Math.min(box!.height - 20, 180);
+      const startX = box!.x + box!.width - 35;
+      const client = await page.context().newCDPSession(page);
+      await client.send('Input.dispatchTouchEvent', {
+        type: 'touchStart',
+        touchPoints: [{ x: startX, y }],
+      });
+      for (const distance of [60, 120, 180, 240]) {
+        await client.send('Input.dispatchTouchEvent', {
+          type: 'touchMove',
+          touchPoints: [{ x: startX - distance, y }],
+        });
+      }
+      await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await expect.poll(() => rail.evaluate((el) => el.scrollLeft)).toBeGreaterThan(20);
+      await client.detach();
     });
 
     test('all four columns are reachable via the position affordance', async ({ page }) => {
@@ -178,6 +227,21 @@ for (const vp of MOBILE_VIEWPORTS) {
       // touch-action: manipulation preserves pan-x/pan-y scrolling; drags
       // require the TouchSensor press-and-hold activation.
       expect(touchAction).toBe('manipulation');
+    });
+
+    test('card actions and filter chips expose 44px touch targets', async ({ page }) => {
+      const card = page
+        .locator('[data-column="backlog"] .group')
+        .filter({ has: page.getByRole('heading', { name: LONG_TITLE }) });
+      await card.scrollIntoViewIfNeeded();
+      await expectTouchTarget(card.getByRole('button', { name: 'Edit task' }));
+      await expectTouchTarget(card.getByRole('button', { name: 'Delete task' }));
+
+      await page.getByRole('button', { name: 'Open menu' }).click();
+      await page.getByRole('button', { name: 'Toggle filters' }).click();
+      for (const name of ['Copilot', 'Running', 'Failed', 'Complete']) {
+        await expectTouchTarget(page.getByRole('button', { name, exact: true }));
+      }
     });
 
     test('header keeps compact mobile controls without overlap', async ({ page }) => {
@@ -248,6 +312,36 @@ for (const vp of MOBILE_VIEWPORTS) {
       await page.getByRole('button', { name: /^Actions/ }).click();
       await expect(composer).toBeInViewport();
     });
+
+    test('completed branch metadata scrolls while composer and actions stay reachable', async ({ page }) => {
+      await page.reload();
+      await waitForBoard(page);
+      await openTaskDrawer(page, COMPLETED_WORKTREE_TITLE);
+
+      const composer = page.getByPlaceholder('Send a message to the agent...');
+      await page.getByRole('button', { name: /Task Description/ }).click();
+      await expect(page.getByText('mobile/completed-worktree-fixture')).toBeVisible();
+      await expect(composer).toBeInViewport();
+
+      const scrollRegion = page.locator('[data-panel-scroll-region]');
+      const scrollMetrics = await scrollRegion.evaluate((el) => ({
+        clientHeight: el.clientHeight,
+        scrollHeight: el.scrollHeight,
+        overflowY: getComputedStyle(el).overflowY,
+      }));
+      expect(scrollMetrics.overflowY).toBe('auto');
+      if (vp.width > vp.height) {
+        expect(scrollMetrics.scrollHeight).toBeGreaterThan(scrollMetrics.clientHeight);
+      } else {
+        expect(scrollMetrics.scrollHeight).toBeGreaterThanOrEqual(scrollMetrics.clientHeight);
+      }
+
+      const merge = page.getByRole('button', { name: 'Merge to main' });
+      await merge.scrollIntoViewIfNeeded();
+      await expectTouchTarget(merge);
+      await expect(composer).toBeInViewport();
+    });
+
 
     test('review task drawer shows Summary tab within the viewport', async ({ page }) => {
       await openTaskDrawer(page, REVIEW_TITLE);

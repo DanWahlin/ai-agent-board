@@ -469,7 +469,7 @@ function BoardPage({
             className="fixed bottom-4 left-1/2 z-[70] flex -translate-x-1/2 items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2 text-sm text-red-400 shadow-lg backdrop-blur-sm"
           >
             <span>{error}</span>
-            <button onClick={clearError} className="ml-1 shrink-0 text-red-400 hover:text-red-300">
+            <button onClick={clearError} className="ml-1 flex h-11 w-11 shrink-0 items-center justify-center rounded text-red-400 hover:bg-red-500/10 hover:text-red-300 lg:h-auto lg:w-auto">
               <X className="h-4 w-4" />
             </button>
           </motion.div>

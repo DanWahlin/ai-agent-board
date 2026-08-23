@@ -42,7 +42,7 @@ export function FilterChips({ activeAgentTypes, activeStatuses, onToggleAgentTyp
           key={chip.value}
           onClick={() => onToggleAgentType(chip.value)}
           className={cn(
-            'flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors',
+            'flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors lg:min-h-0 lg:min-w-0',
             activeAgentTypes.includes(chip.value)
               ? 'border-primary bg-primary/20 text-primary'
               : 'border-zinc-700 bg-zinc-800/50 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'
@@ -61,7 +61,7 @@ export function FilterChips({ activeAgentTypes, activeStatuses, onToggleAgentTyp
           key={chip.value}
           onClick={() => onToggleStatus(chip.value)}
           className={cn(
-            'rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors',
+            'min-h-11 min-w-11 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors lg:min-h-0 lg:min-w-0',
             activeStatuses.includes(chip.value)
               ? chip.color + ' border-current'
               : 'border-zinc-700 bg-zinc-800/50 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'
@@ -75,7 +75,7 @@ export function FilterChips({ activeAgentTypes, activeStatuses, onToggleAgentTyp
       {hasActiveFilters && (
         <button
           onClick={onClear}
-          className="ml-1 rounded-full border border-zinc-600 px-2 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200 transition-colors"
+          className="ml-1 min-h-11 min-w-11 rounded-full border border-zinc-600 px-2 py-0.5 text-[10px] text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-zinc-200 lg:min-h-0 lg:min-w-0"
         >
           Clear
         </button>

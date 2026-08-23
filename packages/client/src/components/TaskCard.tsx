@@ -113,7 +113,7 @@ function TaskCardComponent({ task, onClick, onEdit, onDelete, onArchive, onUnarc
       {/* Action buttons — top right, visible on hover */}
       {(onEdit || onDelete || onArchive || onUnarchive || onRetry) && (
         <div
-          className="absolute right-2 top-2 flex items-center gap-0.5 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity"
+          className="relative mb-1 flex items-center justify-end gap-0.5 opacity-100 transition-opacity lg:absolute lg:right-2 lg:top-2 lg:mb-0 lg:opacity-0 lg:group-hover:opacity-100"
           onPointerDown={(e) => e.stopPropagation()}
         >
           {onRetry && task.agentStatus === 'failed' && !task.archived && (
@@ -122,7 +122,7 @@ function TaskCardComponent({ task, onClick, onEdit, onDelete, onArchive, onUnarc
                 e.stopPropagation();
                 onRetry(task);
               }}
-              className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-amber-400"
+              className="flex h-11 w-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-amber-400 lg:h-6 lg:w-6"
               aria-label="Retry task"
             >
               <RotateCw className="h-3 w-3" />
@@ -134,7 +134,7 @@ function TaskCardComponent({ task, onClick, onEdit, onDelete, onArchive, onUnarc
                 e.stopPropagation();
                 onEdit(task);
               }}
-              className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              className="flex h-11 w-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground lg:h-6 lg:w-6"
               aria-label="Edit task"
             >
               <Pencil className="h-3 w-3" />
@@ -146,7 +146,7 @@ function TaskCardComponent({ task, onClick, onEdit, onDelete, onArchive, onUnarc
                 e.stopPropagation();
                 onArchive(task);
               }}
-              className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              className="flex h-11 w-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground lg:h-6 lg:w-6"
               aria-label="Archive task"
             >
               <Archive className="h-3 w-3" />
@@ -158,7 +158,7 @@ function TaskCardComponent({ task, onClick, onEdit, onDelete, onArchive, onUnarc
                 e.stopPropagation();
                 onUnarchive(task);
               }}
-              className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              className="flex h-11 w-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground lg:h-6 lg:w-6"
               aria-label="Unarchive task"
             >
               <Archive className="h-3 w-3" />
@@ -170,7 +170,7 @@ function TaskCardComponent({ task, onClick, onEdit, onDelete, onArchive, onUnarc
                 e.stopPropagation();
                 onDelete(task);
               }}
-              className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-red-400"
+              className="flex h-11 w-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-red-400 lg:h-6 lg:w-6"
               aria-label="Delete task"
             >
               <Trash2 className="h-3 w-3" />

@@ -241,7 +241,7 @@ function CopyButton({ text }: { text: string }) {
   return (
     <button
       onClick={handleCopy}
-      className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+      className="flex h-11 w-11 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground lg:h-6 lg:w-6"
     >
       {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
     </button>
@@ -746,13 +746,17 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
             </div>
           </div>
 
+          {/* Mobile metadata and tab content share one bounded scroller, so a
+              short sheet cannot push the composer below the viewport. */}
+          <div data-panel-scroll-region className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:overflow-hidden">
+
           {/* Task description as collapsible markdown */}
           {/* WARNING: Do NOT add rehype-raw — it would allow raw HTML injection (XSS). */}
           {task.description && (
             <div className="shrink-0 border-b border-border">
               <button
                 onClick={() => setDescExpanded(!descExpanded)}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left hover:bg-accent/50 transition-colors"
+                className="flex min-h-11 w-full items-center gap-2 px-4 py-2 text-left transition-colors hover:bg-accent/50 lg:min-h-0"
               >
                 <FileText className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                 <span className="text-xs font-medium text-foreground">Task Description</span>
@@ -892,7 +896,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setShowWorktreeConfirm(false)}
-                  className="rounded px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-700"
+                  className="min-h-11 rounded px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-700 lg:min-h-0"
                 >
                   Cancel
                 </button>
@@ -901,7 +905,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
                     setShowWorktreeConfirm(false);
                     if (task && onCleanupWorktree) onCleanupWorktree(task.id);
                   }}
-                  className="rounded bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-500"
+                  className="min-h-11 rounded bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-500 lg:min-h-0"
                 >
                   Delete worktree
                 </button>
@@ -990,7 +994,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
 
           {/* Summary view */}
           {activeTab === 'summary' && (
-            <div className="flex-1 overflow-y-auto p-4">
+            <div className="min-h-32 flex-1 overflow-y-auto p-4 lg:min-h-0">
               {summaryText ? (
                 <>
                   {!completedSectionFilled && (
@@ -1016,14 +1020,14 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
 
           {/* Terminal view */}
           {activeTab === 'terminal' && (
-            <div className={cn('flex-1 overflow-hidden rounded-none', theme === 'light' ? 'bg-[#f8f9fb]' : 'bg-[#0f172a]')}>
+            <div className={cn('min-h-32 flex-1 overflow-hidden rounded-none lg:min-h-0', theme === 'light' ? 'bg-[#f8f9fb]' : 'bg-[#0f172a]')}>
               <TerminalView events={events} streaming={streaming} theme={theme} />
             </div>
           )}
 
           {/* Changes list */}
           {activeTab === 'changes' && (
-            <div className="flex-1 overflow-y-auto p-2 space-y-1">
+            <div className="min-h-32 flex-1 overflow-y-auto p-2 space-y-1 lg:min-h-0">
               {fileChanges.length === 0 && (
                 <div className="flex h-full items-center justify-center">
                   <div className="text-center">
@@ -1051,7 +1055,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
           {activeTab === 'events' && (
           <div
             ref={scrollRef}
-            className="flex-1 overflow-y-auto p-2 space-y-0.5"
+            className="min-h-32 flex-1 overflow-y-auto p-2 space-y-0.5 lg:min-h-0"
           >
             {coalescedEvents.length === 0 && !streaming && failedWithoutDetails && (
               <div className="flex h-full items-center justify-center p-4">
@@ -1117,6 +1121,8 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
           </div>
           )}
 
+          </div>
+
           {/* Follow-up message input — fixed at bottom */}
           <div className="shrink-0 border-t border-border bg-card px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
             {/* Image previews */}
@@ -1128,9 +1134,10 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
                     <button
                       type="button"
                       onClick={() => setFollowUpImages(prev => prev.filter((_, j) => j !== i))}
-                      className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-500 text-white text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                      className="absolute -right-2 -top-2 flex h-11 w-11 items-center justify-center rounded-full text-white opacity-100 transition-opacity lg:h-6 lg:w-6 lg:opacity-0 lg:group-hover:opacity-100"
+                      aria-label={`Remove ${f.name}`}
                     >
-                      ×
+                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-[10px] leading-none">×</span>
                     </button>
                   </div>
                 ))}
@@ -1197,14 +1204,14 @@ function ErrorBanner({ message, onDismiss }: { message: string; onDismiss: () =>
         <p className="whitespace-pre-wrap font-mono text-xs text-red-300">{message}</p>
         <button
           onClick={() => navigator.clipboard.writeText(message)}
-          className="shrink-0 rounded px-2 py-1 text-[10px] text-red-400 hover:bg-red-500/20"
+          className="min-h-11 min-w-11 shrink-0 rounded px-2 py-1 text-[10px] text-red-400 hover:bg-red-500/20 lg:min-h-0 lg:min-w-0"
         >
           Copy
         </button>
       </div>
       <button
         onClick={onDismiss}
-        className="mt-2 text-[10px] text-zinc-300 hover:text-white"
+        className="mt-2 min-h-11 min-w-11 rounded text-[10px] text-zinc-300 hover:text-white lg:min-h-0 lg:min-w-0"
       >
         Dismiss
       </button>

@@ -290,7 +290,7 @@ function EventItem({ event }: { event: CoalescedEvent }) {
     >
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent/50 transition-colors"
+        className="flex min-h-11 w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-accent/50 lg:min-h-0"
       >
         <div className={cn('mt-0.5 shrink-0', color)}>
           <Icon className="h-3.5 w-3.5" />
@@ -1038,7 +1038,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
               )}
               {fileChanges.map((file) => (
                 <details key={file.path} className="group rounded-lg border border-border bg-card">
-                  <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm hover:bg-accent/50">
+                  <summary className="flex min-h-11 cursor-pointer items-center gap-2 px-3 py-2 text-sm hover:bg-accent/50 lg:min-h-0">
                     <span>{file.type === 'created' ? '🟢' : file.type === 'modified' ? '🟡' : '📖'}</span>
                     <span className="flex-1 font-mono text-xs text-foreground truncate" title={file.path}>{file.path}</span>
                     <span className="text-[10px] text-muted-foreground capitalize">{file.type}</span>

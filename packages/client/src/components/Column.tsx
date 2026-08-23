@@ -80,7 +80,7 @@ export function Column({ column, tasks, onTaskClick, onEditTask, onDeleteTask, o
           <motion.button
             whileTap={{ scale: 0.9 }}
             onClick={onAddTask}
-            aria-label="Add task"
+            aria-label="Add backlog task"
             className="-my-2 flex h-11 w-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground lg:my-0 lg:h-6 lg:w-6"
           >
             <Plus className="h-4 w-4" />

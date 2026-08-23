@@ -73,6 +73,7 @@ export interface TaskProvenance {
   sourcePlatform?: string;
   sourceSession?: string;
   sourceMessage?: string;
+  sourceTask?: string;
   requestedBy?: string;
   origin?: Record<string, string | number | boolean | null>;
 }

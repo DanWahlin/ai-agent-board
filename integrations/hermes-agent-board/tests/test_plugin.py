@@ -98,6 +98,14 @@ class PluginTests(unittest.TestCase):
 
         with patch.dict(os.environ, env, clear=False):
             plugin._route_task(
+                {"project": "demo", "agent": "claude", "title": "Task origin", "description": "Work"},
+                task_id="hermes-task-1",
+                session_id="session-origin",
+            )
+        self.assertEqual(Handler.requests[-1][3]["provenance"]["hermesTaskId"], "hermes-task-1")
+
+        with patch.dict(os.environ, env, clear=False):
+            plugin._route_task(
                 {
                     "project": "demo",
                     "agent": "claude",
@@ -119,6 +127,27 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(continuation["description"], "Continue")
         self.assertNotIn("title", continuation)
         self.assertNotIn("agentType", continuation)
+
+    def test_retry_requires_request_identity_and_sends_stable_idempotency_key(self):
+        env = {"AGENT_BOARD_URL": f"http://127.0.0.1:{self.server.server_port}"}
+        with patch.dict(os.environ, env, clear=False):
+            missing = json.loads(plugin._retry_task({"task_id": "task-1"}))
+            self.assertFalse(missing["success"])
+            self.assertIn("request_id", missing["error"])
+            self.assertEqual(Handler.requests, [])
+
+            plugin._retry_task({"task_id": "task-1", "request_id": "retry-request-1", "timeout_minutes": 90})
+            first = Handler.requests[-1]
+            plugin._retry_task({"task_id": "task-1", "request_id": "retry-request-1", "timeout_minutes": 90})
+            second = Handler.requests[-1]
+            plugin._retry_task({"task_id": "task-1", "request_id": "retry-request-2"})
+            third = Handler.requests[-1]
+
+        self.assertEqual((first[0], first[1]), ("POST", "/api/orchestrations/task-1/retry"))
+        self.assertEqual(first[3], {"timeoutMinutes": 90})
+        self.assertEqual(first[2]["Idempotency-Key"], second[2]["Idempotency-Key"])
+        self.assertNotEqual(first[2]["Idempotency-Key"], third[2]["Idempotency-Key"])
+        self.assertEqual(len(first[2]["Idempotency-Key"]), 64)
 
     def test_registers_tools_and_skill(self):
         class Context:

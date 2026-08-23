@@ -131,11 +131,16 @@ def _send_message(params: dict[str, Any], **_: Any) -> str:
 
 
 def _retry_task(params: dict[str, Any], **_: Any) -> str:
-    task_id = urllib.parse.quote(str(params.get("task_id", "")), safe="")
+    raw_task_id = str(params.get("task_id", ""))
+    request_id = str(params.get("request_id", "")).strip()
+    if not request_id:
+        return json.dumps({"success": False, "error": "request_id is required"})
+    task_id = urllib.parse.quote(raw_task_id, safe="")
     body: dict[str, Any] = {}
     if params.get("timeout_minutes") is not None:
         body["timeoutMinutes"] = params["timeout_minutes"]
-    return _result(lambda: _request("POST", f"/api/orchestrations/{task_id}/retry", body))
+    stable = hashlib.sha256(f"agent-board-retry\0{raw_task_id}\0{request_id}".encode("utf-8")).hexdigest()
+    return _result(lambda: _request("POST", f"/api/orchestrations/{task_id}/retry", body, stable))
 
 
 _LIST_PROJECTS_SCHEMA = {
@@ -202,9 +207,10 @@ _RETRY_TASK_SCHEMA = {
         "type": "object",
         "properties": {
             "task_id": {"type": "string"},
+            "request_id": {"type": "string", "description": "Stable unique identity for this retry request; reuse it only when replaying the same retry"},
             "timeout_minutes": {"type": "integer", "minimum": 1, "maximum": 240},
         },
-        "required": ["task_id"],
+        "required": ["task_id", "request_id"],
     },
 }
 

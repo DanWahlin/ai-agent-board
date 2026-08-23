@@ -132,10 +132,12 @@ test('orchestration persists distinct attempts, replays continuations, and track
     const messages: Array<[string, string]> = [];
     const manager = { ...agents, sendMessage: async (taskId: string, message: string) => { messages.push([taskId, message]); return true; } } as unknown as AgentManager;
     await withApi(repo, async (base) => {
-      let response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'new-work-1' }, body: JSON.stringify({ project: 'alpha', agent: 'hermes', title: 'New work', relatedItem: 'existing', autoStart: false }) });
+      let response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'new-work-1' }, body: JSON.stringify({ project: 'alpha', agent: 'hermes', title: 'New work', relatedItem: 'existing', autoStart: false, provenance: { hermesTaskId: 'hermes-parent-1' } }) });
       assert.equal(response.status, 201);
-      const created = await response.json() as { task: Task; attempt: { id: string } };
+      const created = await response.json() as { task: Task; attempt: ExecutionAttempt };
       assert.ok(created.attempt.id);
+      assert.equal(created.task.provenance?.sourceTask, 'hermes-parent-1');
+      assert.equal(JSON.parse(created.attempt.requestSnapshot).provenance.sourceTask, 'hermes-parent-1');
       assert.deepEqual((await repo.getRelationships(created.task.id)).map((relation) => relation.relatedTaskId), ['existing']);
 
       response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'continue-1' }, body: JSON.stringify({ project: 'project-a', task: 'Existing work', description: 'Continue this work', autoStart: false }) });
@@ -351,4 +353,52 @@ test('Postgres orchestration aggregate commits successful work and rolls back re
     }
     assert.equal(released, true);
   }
+});
+
+test('Postgres create orchestration checks attempt replay before writes and returns its original task', async () => {
+  const proposedTask = { ...task('new-card'), externalSource: 'hermes', externalKey: 'shared-key' };
+  const proposedAttempt = attempt('new-attempt', proposedTask.id, 'shared-key');
+  const originalTask = { ...task('original-card'), externalSource: 'hermes', externalKey: 'original-create' };
+  const originalAttempt = attempt('original-attempt', originalTask.id, 'shared-key');
+  const originalTaskRow = {
+    id: originalTask.id, project_id: originalTask.projectId, title: originalTask.title, description: originalTask.description,
+    priority: originalTask.priority, column_id: originalTask.columnId, agent_status: originalTask.agentStatus,
+    agent_type: originalTask.agentType, created_at: String(originalTask.createdAt), started_at: null, completed_at: null,
+    repo_path: originalTask.repoPath, branch_name: originalTask.branchName, base_branch: originalTask.baseBranch,
+    use_worktree: true, worktree_path: null, archived: false, group_id: null, group_order: null, summary: null,
+    external_source: originalTask.externalSource, external_key: originalTask.externalKey, provenance: null,
+    run_requested_at: null, run_claimed_at: null, timeout_minutes: null,
+  };
+  const originalAttemptRow = {
+    id: originalAttempt.id, task_id: originalAttempt.taskId, external_source: originalAttempt.externalSource,
+    external_key: originalAttempt.externalKey, title_snapshot: originalAttempt.titleSnapshot,
+    description_snapshot: originalAttempt.descriptionSnapshot, agent_type: originalAttempt.agentType,
+    related_task_id: null, auto_start: false, timeout_minutes: null, request_snapshot: originalAttempt.requestSnapshot,
+    status: originalAttempt.status, created_at: String(originalAttempt.createdAt),
+  };
+  const calls: string[] = [];
+  let released = false;
+  const client = {
+    query: async (sql: string) => {
+      calls.push(sql);
+      if (sql.startsWith('SELECT * FROM execution_attempts')) return { rows: [originalAttemptRow], rowCount: 1 };
+      if (sql.startsWith('SELECT * FROM tasks WHERE id=')) return { rows: [originalTaskRow], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
+    },
+    release: () => { released = true; },
+  };
+  const repo = new PostgresTaskRepository({ connect: async () => client } as never);
+  const result = await repo.createOrchestration(proposedTask, proposedAttempt, 'unrelated-card', 7);
+
+  assert.equal(result.created, false);
+  assert.equal(result.task.id, originalTask.id);
+  assert.equal(result.attempt.id, originalAttempt.id);
+  assert.deepEqual(calls.slice(0, 4), [
+    'BEGIN',
+    'SELECT * FROM execution_attempts WHERE external_source=$1 AND external_key=$2 FOR UPDATE',
+    'SELECT * FROM tasks WHERE id=$1',
+    'COMMIT',
+  ]);
+  assert.equal(calls.some((sql) => /^\s*(INSERT|UPDATE|DELETE)\b/.test(sql)), false);
+  assert.equal(released, true);
 });

@@ -432,53 +432,67 @@ test('migration-backfilled attempts replay their original create request', async
   } finally { db.close(); }
 });
 
-test('default legacy snapshots compare attempt columns and bind continuation and retry targets', async () => {
+test('legacy replay rejects cross-kind reuse even when recoverable columns and targets match', async () => {
   const db = makeDb();
   const repo = new SqliteTaskRepository(db);
   try {
-    const createTask = { ...task('column-create', 'project-a', 'Column create'), description: 'column description', timeoutMinutes: 30 };
-    const continuationTask = { ...task('column-continuation', 'project-a', 'Column continuation'),
-      description: 'continuation description', timeoutMinutes: 45 };
-    const retryTask = { ...task('column-retry', 'project-a', 'Column retry'), timeoutMinutes: 60 };
-    const otherTask = task('column-other', 'project-a', 'Column other');
-    for (const item of [createTask, continuationTask, retryTask, otherTask]) await repo.create(item);
+    const createToContinuation = { ...task('create-to-continuation', 'project-a', 'Same request values'), description: 'same description' };
+    const createToRetry = { ...task('create-to-retry', 'project-a', 'Retry-shaped create'), agentStatus: 'failed' as const };
+    const continuationToCreate = { ...task('continuation-to-create', 'project-a', 'Create-shaped continuation'), description: '' };
+    for (const item of [createToContinuation, createToRetry, continuationToCreate]) await repo.create(item);
     const attempts: ExecutionAttempt[] = [
-      { ...attempt('column-create-attempt', createTask.id, 'column-create-key'), titleSnapshot: createTask.title,
-        descriptionSnapshot: createTask.description, timeoutMinutes: 30 },
-      { ...attempt('column-continuation-attempt', continuationTask.id, 'column-continuation-key'), titleSnapshot: continuationTask.title,
-        descriptionSnapshot: continuationTask.description, timeoutMinutes: 45 },
-      { ...attempt('column-retry-attempt', retryTask.id, 'column-retry-key'), autoStart: true, status: 'dispatched', timeoutMinutes: 60 },
+      { ...attempt('create-to-continuation-attempt', createToContinuation.id, 'create-to-continuation-key'),
+        titleSnapshot: createToContinuation.title, descriptionSnapshot: createToContinuation.description,
+        requestSnapshot: JSON.stringify({ kind: 'create' }) },
+      { ...attempt('create-to-retry-attempt', createToRetry.id, 'create-to-retry-key'), autoStart: true, status: 'dispatched',
+        requestSnapshot: JSON.stringify({ kind: 'create' }) },
+      { ...attempt('continuation-to-create-attempt', continuationToCreate.id, 'continuation-to-create-key'),
+        titleSnapshot: continuationToCreate.title, descriptionSnapshot: continuationToCreate.description,
+        requestSnapshot: JSON.stringify({ kind: 'continuation' }) },
     ];
     for (const legacyAttempt of attempts) assert.equal((await repo.createAttemptIdempotent(legacyAttempt)).created, true);
 
     await withApi(repo, async (base) => {
-      const createHeaders = { 'content-type': 'application/json', 'idempotency-key': 'column-create-key' };
-      let response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: createHeaders,
-        body: JSON.stringify({ project: 'alpha', title: createTask.title, description: createTask.description,
-          agent: 'hermes', timeoutMinutes: 30, autoStart: false }) });
-      assert.equal(response.status, 200);
-      response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: createHeaders,
-        body: JSON.stringify({ project: 'alpha', title: createTask.title, description: 'changed',
-          agent: 'hermes', timeoutMinutes: 30, autoStart: false }) });
+      let response = await fetch(`${base}/api/orchestrations`, { method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': 'create-to-continuation-key' },
+        body: JSON.stringify({ project: 'alpha', task: createToContinuation.id, title: createToContinuation.title,
+          description: createToContinuation.description, agent: 'hermes', autoStart: false }) });
       assert.equal(response.status, 409);
 
-      const continuationHeaders = { 'content-type': 'application/json', 'idempotency-key': 'column-continuation-key' };
-      response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: continuationHeaders,
-        body: JSON.stringify({ project: 'alpha', task: continuationTask.id, title: continuationTask.title,
-          description: continuationTask.description, agent: 'hermes', timeoutMinutes: 45, autoStart: false }) });
-      assert.equal(response.status, 200);
-      response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: continuationHeaders,
-        body: JSON.stringify({ project: 'alpha', task: otherTask.id, title: continuationTask.title,
-          description: continuationTask.description, agent: 'hermes', timeoutMinutes: 45, autoStart: false }) });
+      response = await fetch(`${base}/api/orchestrations/${createToRetry.id}/retry`, { method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': 'create-to-retry-key' }, body: '{}' });
       assert.equal(response.status, 409);
 
-      const retryHeaders = { 'content-type': 'application/json', 'idempotency-key': 'column-retry-key' };
-      response = await fetch(`${base}/api/orchestrations/${retryTask.id}/retry`, { method: 'POST', headers: retryHeaders, body: '{}' });
-      assert.equal(response.status, 200);
-      response = await fetch(`${base}/api/orchestrations/${otherTask.id}/retry`, { method: 'POST', headers: retryHeaders, body: '{}' });
+      response = await fetch(`${base}/api/orchestrations`, { method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': 'continuation-to-create-key' },
+        body: JSON.stringify({ project: 'alpha', title: continuationToCreate.title, agent: 'hermes', autoStart: false }) });
       assert.equal(response.status, 409);
-      response = await fetch(`${base}/api/orchestrations/missing-task/retry`, { method: 'POST', headers: retryHeaders, body: '{}' });
-      assert.equal(response.status, 409);
+    });
+  } finally { db.close(); }
+});
+
+test('legacy replay fails closed for missing, malformed, or unrecognized snapshot kinds', async () => {
+  const db = makeDb();
+  const repo = new SqliteTaskRepository(db);
+  try {
+    const snapshots = ['{}', '{not-json', JSON.stringify({ kind: 'unknown' }), JSON.stringify({ kind: 42 })];
+    for (const [index, requestSnapshot] of snapshots.entries()) {
+      const item = { ...task(`untrusted-snapshot-${index}`, 'project-a', `Untrusted snapshot ${index}`), description: '' };
+      await repo.create(item);
+      assert.equal((await repo.createAttemptIdempotent({
+        ...attempt(`untrusted-snapshot-attempt-${index}`, item.id, `untrusted-snapshot-key-${index}`),
+        titleSnapshot: item.title,
+        requestSnapshot,
+      })).created, true);
+    }
+
+    await withApi(repo, async (base) => {
+      for (const index of snapshots.keys()) {
+        const response = await fetch(`${base}/api/orchestrations`, { method: 'POST',
+          headers: { 'content-type': 'application/json', 'idempotency-key': `untrusted-snapshot-key-${index}` },
+          body: JSON.stringify({ project: 'alpha', title: `Untrusted snapshot ${index}`, agent: 'hermes', autoStart: false }) });
+        assert.equal(response.status, 409);
+      }
     });
   } finally { db.close(); }
 });

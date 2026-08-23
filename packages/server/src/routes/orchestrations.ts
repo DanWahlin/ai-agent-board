@@ -179,9 +179,13 @@ async function legacyRequestConflicts(
   const kind = identity.kind;
   // Migration backfills represent the original task-creation request even
   // though they deliberately use a distinct marker from native attempts.
-  if (typeof snapshot.kind === 'string'
-      && snapshot.kind !== kind
-      && !(snapshot.kind === 'legacy-task-backfill' && kind === 'create')) return true;
+  // Other legacy rows must carry a recognized top-level kind. Attempt columns
+  // can help compare fields, but cannot authoritatively distinguish a create,
+  // continuation, or retry whose recoverable values happen to match.
+  if (snapshot.kind === 'legacy-task-backfill') {
+    if (kind !== 'create') return true;
+  } else if (!['create', 'continuation', 'retry'].includes(String(snapshot.kind))
+      || snapshot.kind !== kind) return true;
 
   const attemptTask = await repo.getById(attempt.taskId);
   if (!attemptTask) return true;

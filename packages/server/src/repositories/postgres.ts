@@ -349,6 +349,13 @@ export class PostgresTaskRepository implements TaskRepository {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      // A missing row cannot be protected with SELECT ... FOR UPDATE. Serialize
+      // every operation for this external identity before any task write so a
+      // concurrent create/continuation/retry cannot leave an orphan task.
+      await client.query(
+        'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+        [`${attempt.externalSource}\0${attempt.externalKey}`],
+      );
       const replayResult = await client.query<AttemptRow>(
         'SELECT * FROM execution_attempts WHERE external_source=$1 AND external_key=$2 FOR UPDATE',
         [attempt.externalSource, attempt.externalKey],
@@ -405,6 +412,10 @@ export class PostgresTaskRepository implements TaskRepository {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      await client.query(
+        'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+        [`${attempt.externalSource}\0${attempt.externalKey}`],
+      );
       const currentResult = await client.query<TaskRow>('SELECT * FROM tasks WHERE id=$1 FOR UPDATE', [taskId]);
       if (!currentResult.rows[0]) { await client.query('ROLLBACK'); return undefined; }
       const current = rowToTask(currentResult.rows[0]);

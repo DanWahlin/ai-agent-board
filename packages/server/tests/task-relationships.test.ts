@@ -393,8 +393,9 @@ test('Postgres create orchestration checks attempt replay before writes and retu
   assert.equal(result.created, false);
   assert.equal(result.task.id, originalTask.id);
   assert.equal(result.attempt.id, originalAttempt.id);
-  assert.deepEqual(calls.slice(0, 4), [
+  assert.deepEqual(calls.slice(0, 5), [
     'BEGIN',
+    'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
     'SELECT * FROM execution_attempts WHERE external_source=$1 AND external_key=$2 FOR UPDATE',
     'SELECT * FROM tasks WHERE id=$1',
     'COMMIT',

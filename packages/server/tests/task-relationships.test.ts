@@ -166,6 +166,38 @@ test('orchestration persists distinct attempts, replays continuations, and track
   } finally { db.close(); }
 });
 
+test('create replay returns the durable attempt even when agent readiness changes', async () => {
+  const db = makeDb();
+  const repo = new SqliteTaskRepository(db);
+  let available = true;
+  let dispatches = 0;
+  const manager = {
+    ...agents,
+    getAvailableAgents: () => [{ name: 'hermes', displayName: 'Hermes', available }],
+    startAgent: () => { dispatches += 1; },
+  } as unknown as AgentManager;
+  try {
+    await withApi(repo, async (base) => {
+      const headers = { 'content-type': 'application/json', 'idempotency-key': 'readiness-replay' };
+      const body = JSON.stringify({ project: 'alpha', agent: 'hermes', title: 'Durable replay', autoStart: true });
+      let response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers, body });
+      assert.equal(response.status, 201);
+      const created = await response.json() as { task: Task; attempt: ExecutionAttempt };
+      await nextTurn();
+      assert.equal(dispatches, 1);
+
+      available = false;
+      response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers, body });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('idempotent-replay'), 'true');
+      const replayed = await response.json() as { task: Task; attempt: ExecutionAttempt };
+      assert.equal(replayed.task.id, created.task.id);
+      assert.equal(replayed.attempt.id, created.attempt.id);
+      assert.equal(dispatches, 1);
+    }, manager);
+  } finally { db.close(); }
+});
+
 test('orchestration idempotency binds related item and validation has no relationship side effects', async () => {
   const db = makeDb();
   const repo = new SqliteTaskRepository(db);

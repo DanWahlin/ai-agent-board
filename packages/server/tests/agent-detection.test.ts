@@ -238,6 +238,36 @@ test('non-Windows detection uses SDK results without Windows probes', async () =
   assert.equal(copilot?.reason, 'Copilot CLI not found in PATH');
 });
 
+test('configured Hermes command is the detection authority', async () => {
+  const calls: Array<{ file: string; args: string[] }> = [];
+  const agents = await detectAvailableAgents({
+    detectAgents: async () => [{ name: 'hermes', displayName: 'Hermes', available: false, reason: 'plain hermes missing' } as AgentInfo],
+    env: { HERMES_COMMAND: '/opt/agentmic/hermes-agentmic' },
+    platform: 'linux',
+    execCommand: async (file, args) => {
+      calls.push({ file, args });
+      return { stdout: 'Hermes Agent 1.2.3\n' };
+    },
+  });
+
+  assert.deepEqual(calls, [{ file: '/opt/agentmic/hermes-agentmic', args: ['--version'] }]);
+  assert.equal(agents[0].available, true);
+  assert.equal(agents[0].version, 'Hermes Agent 1.2.3');
+  assert.equal(agents[0].reason, undefined);
+});
+
+test('configured Hermes command failure cannot fall back to plain Hermes', async () => {
+  const agents = await detectAvailableAgents({
+    detectAgents: async () => [{ name: 'hermes', displayName: 'Hermes', available: true } as AgentInfo],
+    env: { HERMES_COMMAND: '/opt/agentmic/missing' },
+    platform: 'linux',
+    execCommand: async () => { throw Object.assign(new Error('not found'), { code: 'ENOENT' }); },
+  });
+
+  assert.equal(agents[0].available, false);
+  assert.match(agents[0].reason ?? '', /Configured Hermes command is not ready/);
+});
+
 test('Windows executable lookup does not require a copilot PATH shim', (t) => {
   const { binDir, cleanup } = createFixtureBin('path-lookup');
   t.after(cleanup);

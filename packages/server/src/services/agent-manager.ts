@@ -126,7 +126,9 @@ export class AgentManager {
     this.providers.set('claude', new ClaudeProvider());
     this.providers.set('codex', new CodexProvider());
     this.providers.set('opencode', new OpenCodeProvider());
-    this.providers.set('hermes', new HermesProvider());
+    this.providers.set('hermes', new HermesProvider({
+      command: process.env.HERMES_COMMAND?.trim() || 'hermes',
+    }));
     this.providers.set('openclaw', new OpenClawProvider());
     this.providers.set('grok', new GrokProvider());
 

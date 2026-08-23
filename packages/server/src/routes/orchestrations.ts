@@ -433,17 +433,6 @@ export function createOrchestrationsRouter(
       return;
     }
 
-    if (autoStart) {
-      const ready = agents.getAvailableAgents().find((agent) => agent.name === agentType);
-      if (!ready?.available) {
-        res.status(409).json({
-          error: `agent ${agentType} is not ready`,
-          reason: ready?.reason,
-        });
-        return;
-      }
-    }
-
     const relatedTask = relatedReference === undefined
       ? undefined
       : await resolveRelatedTask(repo, project.id, relatedReference, res);
@@ -477,6 +466,35 @@ export function createOrchestrationsRouter(
         agent: agentType, baseBranch, branchName, timeoutMinutes: timeoutMinutes ?? null, autoStart,
         relatedTaskId: relatedTask?.id ?? null, provenance: provenance ?? null }),
     };
+    const replay = await repo.getAttemptByExternalIdentity('hermes', key);
+    if (replay) {
+      if (attemptConflicts(replay, expectedAttempt)) {
+        res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' });
+        return;
+      }
+      const replayTask = await repo.getById(replay.taskId);
+      if (!replayTask) {
+        res.status(500).json({ error: 'create attempt references a missing task' });
+        return;
+      }
+      res.status(200).set('Idempotent-Replay', 'true').json({
+        task: replayTask, attempt: replay,
+        contract: { projectId: replayTask.projectId, taskId: replayTask.id, attemptId: replay.id, deepLink: taskLink(req, replayTask.projectId, replayTask.id) },
+      });
+      return;
+    }
+
+    if (autoStart) {
+      const ready = agents.getAvailableAgents().find((agent) => agent.name === agentType);
+      if (!ready?.available) {
+        res.status(409).json({
+          error: `agent ${agentType} is not ready`,
+          reason: ready?.reason,
+        });
+        return;
+      }
+    }
+
     const aggregate = await repo.createOrchestration(task, expectedAttempt, relatedTask?.id, Date.now());
     const deepLink = taskLink(req, aggregate.task.projectId, aggregate.task.id);
     if (!aggregate.created) {

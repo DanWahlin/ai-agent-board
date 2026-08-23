@@ -216,6 +216,29 @@ function appendSdkReason(reason: string, sdkReason?: string): string {
   return sdkReason ? `${reason} SDK probe: ${sdkReason}` : reason;
 }
 
+async function normalizeConfiguredHermesAvailability(
+  agents: AgentInfo[],
+  execCommand: ExecCommand,
+  env: NodeJS.ProcessEnv,
+): Promise<AgentInfo[]> {
+  const configuredCommand = env.HERMES_COMMAND?.trim();
+  if (!configuredCommand) return agents;
+
+  const hermes = agents.find(agent => agent.name === 'hermes');
+  if (!hermes) return agents;
+
+  const result = await runProbe(execCommand, configuredCommand, ['--version'], env);
+  if (!result.ok) {
+    return agents.map(agent => agent.name === 'hermes'
+      ? { ...agent, available: false, reason: `Configured Hermes command is not ready: ${result.error ?? 'unknown error'}` }
+      : agent);
+  }
+
+  return agents.map(agent => agent.name === 'hermes'
+    ? { ...agent, available: true, version: firstOutputLine(`${result.stdout}\n${result.stderr}`), reason: undefined }
+    : agent);
+}
+
 async function normalizeWindowsCopilotAvailability(
   agents: AgentInfo[],
   execCommand: ExecCommand,
@@ -262,10 +285,12 @@ export async function detectAvailableAgents(options: DetectAvailableAgentsOption
   const agents = await (options.detectAgents ?? detectCoreAgents)();
   const platform = options.platform ?? process.platform;
 
+  const env = options.env ? { ...process.env, ...options.env } : process.env;
+  const execCommand = options.execCommand ?? execFileAsync;
   if (platform !== 'win32') {
-    return agents;
+    return normalizeConfiguredHermesAvailability(agents, execCommand, env);
   }
 
-  const env = options.env ? { ...process.env, ...options.env } : process.env;
-  return normalizeWindowsCopilotAvailability(agents, options.execCommand ?? execFileAsync, env);
+  const normalized = await normalizeWindowsCopilotAvailability(agents, execCommand, env);
+  return normalizeConfiguredHermesAvailability(normalized, execCommand, env);
 }

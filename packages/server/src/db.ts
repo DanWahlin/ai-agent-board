@@ -174,6 +174,19 @@ function migrate(db: Database.Database): void {
     db.exec(`ALTER TABLE task_groups ADD COLUMN project_id TEXT NOT NULL DEFAULT 'default'`);
   }
   ensureSqliteProjectForeignKeys(db);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_relationships (
+      task_id         TEXT NOT NULL,
+      related_task_id TEXT NOT NULL,
+      type            TEXT NOT NULL DEFAULT 'related' CHECK (type = 'related'),
+      created_at      INTEGER NOT NULL,
+      PRIMARY KEY (task_id, related_task_id),
+      CHECK (task_id < related_task_id),
+      FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+      FOREIGN KEY (related_task_id) REFERENCES tasks(id) ON DELETE CASCADE
+    )
+  `);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_task_relationships_related ON task_relationships(related_task_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_column_id ON tasks(column_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_agent_status ON tasks(agent_status)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_column_created ON tasks(column_id, created_at)`);
@@ -521,6 +534,18 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
         FOREIGN KEY (project_id) REFERENCES projects(id)
     `).catch(() => { /* constraint may already exist or be blocked by existing data */ });
   }
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS task_relationships (
+      task_id         TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      related_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      type            TEXT NOT NULL DEFAULT 'related' CHECK (type = 'related'),
+      created_at      BIGINT NOT NULL,
+      PRIMARY KEY (task_id, related_task_id),
+      CHECK (task_id < related_task_id)
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_task_relationships_related ON task_relationships(related_task_id)`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS events (

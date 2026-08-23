@@ -79,6 +79,7 @@ class PluginTests(unittest.TestCase):
                         "agent": "claude",
                         "title": "Do work",
                         "description": "Objective and acceptance criteria",
+                        "related_item": "task-0",
                     },
                     session_id="session-1",
                 )
@@ -92,6 +93,7 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(body["provenance"]["sourceSession"], "session-1")
         self.assertEqual(body["isolation"], "worktree")
         self.assertEqual(body["agentType"], "claude")
+        self.assertEqual(body["relatedItem"], "task-0")
         self.assertNotIn("timeoutMinutes", body)
 
         with patch.dict(os.environ, env, clear=False):
@@ -106,6 +108,17 @@ class PluginTests(unittest.TestCase):
                 session_id="session-2",
             )
         self.assertEqual(Handler.requests[-1][3]["timeoutMinutes"], 120)
+
+        with patch.dict(os.environ, env, clear=False):
+            plugin._route_task(
+                {"project": "demo", "existing_task": "task-1", "description": "Continue"},
+                session_id="session-3",
+            )
+        continuation = Handler.requests[-1][3]
+        self.assertEqual(continuation["task"], "task-1")
+        self.assertEqual(continuation["description"], "Continue")
+        self.assertNotIn("title", continuation)
+        self.assertNotIn("agentType", continuation)
 
     def test_registers_tools_and_skill(self):
         class Context:

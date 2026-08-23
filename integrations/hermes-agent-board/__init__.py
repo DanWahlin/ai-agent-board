@@ -92,18 +92,23 @@ def _route_task(params: dict[str, Any], task_id: str = "", session_id: str = "",
     if platform:
         origin.setdefault("sourcePlatform", platform)
 
-    body = {
+    body: dict[str, Any] = {
         "project": params.get("project"),
-        "agentType": params.get("agent"),
-        "title": params.get("title"),
-        "description": params.get("description", ""),
-        "priority": params.get("priority", "medium"),
         "autoStart": params.get("auto_start", True),
         "isolation": "worktree" if params.get("use_worktree", True) else "checkout",
-        "baseBranch": params.get("base_branch"),
-        "branchName": params.get("branch_name"),
         "provenance": origin,
     }
+    optional_fields = {
+        "agentType": params.get("agent"),
+        "title": params.get("title"),
+        "description": params.get("description"),
+        "priority": params.get("priority"),
+        "baseBranch": params.get("base_branch"),
+        "branchName": params.get("branch_name"),
+        "task": params.get("existing_task"),
+        "relatedItem": params.get("related_item"),
+    }
+    body.update({key: value for key, value in optional_fields.items() if value is not None})
     timeout_minutes = params.get("timeout_minutes")
     if timeout_minutes is not None:
         body["timeoutMinutes"] = timeout_minutes
@@ -147,11 +152,13 @@ _LIST_AGENTS_SCHEMA = {
 
 _ROUTE_TASK_SCHEMA = {
     "name": "agent_board_route_task",
-    "description": "Create and optionally start one idempotent coding task on the shared AI Agent Board. Use only for explicit delegation to a named coding agent and a uniquely resolved Board project.",
+    "description": "Create related project work or continue an existing durable Board task. Exact IDs win; ambiguous names fail closed.",
     "parameters": {
         "type": "object",
         "properties": {
             "project": {"type": "string", "description": "Canonical project ID or unique project name/alias"},
+            "existing_task": {"type": "string", "description": "Exact existing task ID or unique exact title to continue instead of creating a card"},
+            "related_item": {"type": "string", "description": "Exact task ID or unique exact title to relate to this work"},
             "agent": {"type": "string", "enum": ["claude", "codex", "copilot", "grok", "opencode", "hermes", "openclaw"]},
             "title": {"type": "string"},
             "description": {"type": "string", "description": "Full execution contract with objective, requirements, acceptance criteria, verification, and safety boundaries"},
@@ -164,7 +171,11 @@ _ROUTE_TASK_SCHEMA = {
             "idempotency_key": {"type": "string", "description": "Stable caller-provided key; normally omitted so the plugin derives one from session and request"},
             "origin": {"type": "object", "description": "Optional non-secret origin metadata"},
         },
-        "required": ["project", "agent", "title", "description"],
+        "required": ["project"],
+        "anyOf": [
+            {"required": ["existing_task"]},
+            {"required": ["agent", "title", "description"]},
+        ],
     },
 }
 

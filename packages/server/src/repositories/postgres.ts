@@ -354,7 +354,7 @@ export class PostgresTaskRepository implements TaskRepository {
       // concurrent create/continuation/retry cannot leave an orphan task.
       await client.query(
         'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
-        [`${attempt.externalSource}\0${attempt.externalKey}`],
+        [`${attempt.externalSource.length}:${attempt.externalSource}${attempt.externalKey}`],
       );
       const replayResult = await client.query<AttemptRow>(
         'SELECT * FROM execution_attempts WHERE external_source=$1 AND external_key=$2 FOR UPDATE',
@@ -414,7 +414,7 @@ export class PostgresTaskRepository implements TaskRepository {
       await client.query('BEGIN');
       await client.query(
         'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
-        [`${attempt.externalSource}\0${attempt.externalKey}`],
+        [`${attempt.externalSource.length}:${attempt.externalSource}${attempt.externalKey}`],
       );
       const currentResult = await client.query<TaskRow>('SELECT * FROM tasks WHERE id=$1 FOR UPDATE', [taskId]);
       if (!currentResult.rows[0]) { await client.query('ROLLBACK'); return undefined; }

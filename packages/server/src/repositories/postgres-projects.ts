@@ -62,16 +62,15 @@ export class PostgresProjectRepository implements ProjectRepository {
   }
 
   async resolve(reference: string): Promise<Project[]> {
-    const needle = reference.trim().toLowerCase();
+    const exactReference = reference.trim();
+    const needle = exactReference.toLowerCase();
     const { rows } = await this.pool.query<ProjectRow>('SELECT * FROM projects');
-    const exactId = rows.find((row) => row.id.toLowerCase() === needle);
+    const exactId = rows.find((row) => row.id === exactReference);
     if (exactId) return [rowToProject(exactId, await this.getCounts(exactId.id))];
     const matches = rows.filter((row) => {
       const aliases = JSON.parse(row.aliases || '[]') as string[];
       return row.name.toLowerCase() === needle
-        || aliases.some((alias) => alias.toLowerCase() === needle)
-        || row.repo_path?.toLowerCase() === needle
-        || row.repo_url?.replace(/\.git$/i, '').toLowerCase() === needle.replace(/\.git$/i, '');
+        || aliases.some((alias) => alias.toLowerCase() === needle);
     });
     return Promise.all(matches.map(async (row) => rowToProject(row, await this.getCounts(row.id))));
   }

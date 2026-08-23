@@ -21,7 +21,7 @@ Do not route general coding questions, comparisons, hypotheticals, quoted exampl
 ## Procedure
 
 1. Call `agent_board_list_projects` when the project is not already identified by a canonical Board project ID
-2. Resolve only an exact ID, exact repository path/URL, or unique project name/alias. Never silently use the Default project
+2. Resolve only an exact ID, exact project name, or unique project alias. Never silently use the Default project
 3. Call `agent_board_list_agents` and confirm the explicitly requested agent is available. Never silently substitute another agent
 4. Build a bounded execution contract containing:
    - objective

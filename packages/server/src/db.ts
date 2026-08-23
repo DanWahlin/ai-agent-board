@@ -567,26 +567,46 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
 
   const { rows: pfkRows } = await pool.query(`
     SELECT constraint_name FROM information_schema.table_constraints
-    WHERE table_name = 'tasks' AND constraint_type = 'FOREIGN KEY'
+    WHERE table_schema = current_schema() AND table_name = 'tasks' AND constraint_type = 'FOREIGN KEY'
       AND constraint_name = 'tasks_project_id_fkey'
   `);
   if (pfkRows.length === 0) {
-    await pool.query(`
-      ALTER TABLE tasks ADD CONSTRAINT tasks_project_id_fkey
-        FOREIGN KEY (project_id) REFERENCES projects(id)
-    `).catch(() => { /* constraint may already exist or be blocked by existing data */ });
+    try {
+      await pool.query(`
+        ALTER TABLE tasks ADD CONSTRAINT tasks_project_id_fkey
+          FOREIGN KEY (project_id) REFERENCES projects(id)
+      `);
+    } catch (error) {
+      if ((error as { code?: string }).code !== '42710') throw error;
+      const { rows } = await pool.query(`
+        SELECT constraint_name FROM information_schema.table_constraints
+        WHERE table_schema = current_schema() AND table_name = 'tasks'
+          AND constraint_type = 'FOREIGN KEY' AND constraint_name = 'tasks_project_id_fkey'
+      `);
+      if (rows.length === 0) throw error;
+    }
   }
 
   const { rows: gpfkRows } = await pool.query(`
     SELECT constraint_name FROM information_schema.table_constraints
-    WHERE table_name = 'task_groups' AND constraint_type = 'FOREIGN KEY'
+    WHERE table_schema = current_schema() AND table_name = 'task_groups' AND constraint_type = 'FOREIGN KEY'
       AND constraint_name = 'task_groups_project_id_fkey'
   `);
   if (gpfkRows.length === 0) {
-    await pool.query(`
-      ALTER TABLE task_groups ADD CONSTRAINT task_groups_project_id_fkey
-        FOREIGN KEY (project_id) REFERENCES projects(id)
-    `).catch(() => { /* constraint may already exist or be blocked by existing data */ });
+    try {
+      await pool.query(`
+        ALTER TABLE task_groups ADD CONSTRAINT task_groups_project_id_fkey
+          FOREIGN KEY (project_id) REFERENCES projects(id)
+      `);
+    } catch (error) {
+      if ((error as { code?: string }).code !== '42710') throw error;
+      const { rows } = await pool.query(`
+        SELECT constraint_name FROM information_schema.table_constraints
+        WHERE table_schema = current_schema() AND table_name = 'task_groups'
+          AND constraint_type = 'FOREIGN KEY' AND constraint_name = 'task_groups_project_id_fkey'
+      `);
+      if (rows.length === 0) throw error;
+    }
   }
 
   await pool.query(`

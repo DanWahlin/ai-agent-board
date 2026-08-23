@@ -42,6 +42,14 @@ export interface Task {
   timeoutMinutes?: number | null;
 }
 
+/** A first-class link between two durable Board work items. */
+export interface TaskRelationship {
+  taskId: string;
+  relatedTaskId: string;
+  type: 'related';
+  createdAt: number;
+}
+
 export interface TaskProvenance {
   sourceProfile?: string;
   sourcePlatform?: string;

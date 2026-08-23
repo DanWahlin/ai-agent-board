@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import type { Task, Priority, ColumnId, AgentStatus, AgentType, AgentEvent } from '../types.js';
+import type { Task, Priority, ColumnId, AgentStatus, AgentType, AgentEvent, TaskRelationship } from '../types.js';
 import type { TaskRepository } from './types.js';
 import { errorMessage } from '../utils.js';
 
@@ -133,6 +133,13 @@ export class SqliteTaskRepository implements TaskRepository {
     return row ? rowToTask(row) : undefined;
   }
 
+  async resolve(reference: string, projectId: string): Promise<Task[]> {
+    const needle = reference.trim();
+    const exact = this.stmts.getById.get(needle) as TaskRow | undefined;
+    if (exact) return exact.project_id === projectId ? [rowToTask(exact)] : [];
+    return (this.db.prepare('SELECT * FROM tasks WHERE project_id = ? AND lower(title) = lower(?) ORDER BY created_at, id').all(projectId, needle) as TaskRow[]).map(rowToTask);
+  }
+
   async create(task: Task): Promise<Task> {
     this.stmts.insert.run({
       id: task.id,
@@ -259,5 +266,26 @@ export class SqliteTaskRepository implements TaskRepository {
 
   async getArchivedTasks(projectId = 'default'): Promise<Task[]> {
     return (this.stmts.getArchived.all(projectId) as TaskRow[]).map(rowToTask);
+  }
+
+  async getRelationships(taskId: string): Promise<TaskRelationship[]> {
+    const rows = this.db.prepare(`SELECT task_id, related_task_id, type, created_at FROM task_relationships
+      WHERE task_id = ? OR related_task_id = ? ORDER BY created_at, task_id, related_task_id`).all(taskId, taskId) as Array<{ task_id: string; related_task_id: string; type: 'related'; created_at: number }>;
+    return rows.map((row) => ({ taskId, relatedTaskId: row.task_id === taskId ? row.related_task_id : row.task_id, type: row.type, createdAt: row.created_at }));
+  }
+
+  async createRelationship(taskId: string, relatedTaskId: string, createdAt: number): Promise<{ relationship: TaskRelationship; created: boolean }> {
+    if (taskId === relatedTaskId) throw new Error('a task cannot be related to itself');
+    const [left, right] = taskId < relatedTaskId ? [taskId, relatedTaskId] : [relatedTaskId, taskId];
+    const result = this.db.prepare(`INSERT OR IGNORE INTO task_relationships (task_id, related_task_id, type, created_at)
+      SELECT ?, ?, 'related', ? FROM tasks a JOIN tasks b ON b.id = ? WHERE a.id = ? AND a.project_id = b.project_id`).run(left, right, createdAt, right, left);
+    const row = this.db.prepare('SELECT created_at FROM task_relationships WHERE task_id = ? AND related_task_id = ?').get(left, right) as { created_at: number } | undefined;
+    if (!row) throw new Error('tasks must exist in the same project');
+    return { relationship: { taskId, relatedTaskId, type: 'related', createdAt: row.created_at }, created: result.changes > 0 };
+  }
+
+  async deleteRelationship(taskId: string, relatedTaskId: string): Promise<boolean> {
+    const [left, right] = taskId < relatedTaskId ? [taskId, relatedTaskId] : [relatedTaskId, taskId];
+    return this.db.prepare('DELETE FROM task_relationships WHERE task_id = ? AND related_task_id = ?').run(left, right).changes > 0;
   }
 }

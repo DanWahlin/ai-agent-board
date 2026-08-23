@@ -142,6 +142,45 @@ export function createTaskRouter(repo: TaskRepository, agentManager: AgentManage
     res.status(201).json({ tasks: created });
   }));
 
+  // First-class task relationships. References are exact ids or exact titles;
+  // duplicate titles fail closed rather than guessing.
+  router.get('/:id/relationships', asyncHandler(async (req: Request, res: Response) => {
+    const task = await repo.getById(paramId(req));
+    if (!task) { res.status(404).json({ error: 'task not found' }); return; }
+    const relationships = await repo.getRelationships(task.id);
+    res.json(await Promise.all(relationships.map(async (relationship) => ({
+      ...relationship,
+      relatedTask: await repo.getById(relationship.relatedTaskId),
+    }))));
+  }));
+
+  router.post('/:id/relationships', asyncHandler(async (req: Request, res: Response) => {
+    const task = await repo.getById(paramId(req));
+    if (!task) { res.status(404).json({ error: 'task not found' }); return; }
+    const reference = req.body.relatedTask ?? req.body.relatedTaskId ?? req.body.relatedItem;
+    if (typeof reference !== 'string' || !reference.trim()) {
+      res.status(400).json({ error: 'relatedTask is required (exact id or title)' }); return;
+    }
+    const matches = await repo.resolve(reference, task.projectId);
+    if (!matches.length) { res.status(404).json({ error: 'related task not found in this project' }); return; }
+    if (matches.length > 1) {
+      res.status(409).json({ error: 'related task reference is ambiguous', matches: matches.map(({ id, title }) => ({ id, title })) }); return;
+    }
+    if (matches[0].id === task.id) { res.status(400).json({ error: 'a task cannot be related to itself' }); return; }
+    const result = await repo.createRelationship(task.id, matches[0].id, Date.now());
+    res.status(result.created ? 201 : 200).set(result.created ? {} : { 'Idempotent-Replay': 'true' }).json(result.relationship);
+  }));
+
+  router.delete('/:id/relationships/:relatedId', asyncHandler(async (req: Request, res: Response) => {
+    const task = await repo.getById(paramId(req));
+    if (!task) { res.status(404).json({ error: 'task not found' }); return; }
+    const matches = await repo.resolve(String(req.params.relatedId), task.projectId);
+    if (!matches.length) { res.status(404).json({ error: 'related task not found in this project' }); return; }
+    if (matches.length > 1) { res.status(409).json({ error: 'related task reference is ambiguous' }); return; }
+    if (!await repo.deleteRelationship(task.id, matches[0].id)) { res.status(404).json({ error: 'relationship not found' }); return; }
+    res.status(204).send();
+  }));
+
   // GET /api/tasks/:id/status — lightweight polling endpoint
   router.get('/:id/status', asyncHandler(async (req: Request, res: Response) => {
     const task = await repo.getById(paramId(req));

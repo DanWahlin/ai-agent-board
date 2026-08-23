@@ -5,6 +5,7 @@ export type {
   AgentStatus,
   AgentType,
   Task,
+  TaskRelationship,
   TaskProvenance,
   TaskGroup,
   TaskTemplate,

@@ -33,8 +33,10 @@ Do not route general coding questions, comparisons, hypotheticals, quoted exampl
 5. Call `agent_board_route_task` with `auto_start=true` unless Dan said to queue it without starting
 6. Return the project, agent, card ID, direct Board link, branch, and current status
 7. Follow-ups for an active card should use `agent_board_send_message`, not create a duplicate card
-8. Use `agent_board_get_task` to check status when Dan asks for progress
-9. Use `timeout_minutes` for work expected to exceed the 60-minute Board default. If a task times out, call `agent_board_retry_task` on the existing card with a larger limit; never bypass tracking by launching the named coding agent directly
+8. Continuation of stopped/completed work must call `agent_board_route_task` with `existing_task` so the durable card ID is reused. New work that is connected but distinct must use `related_item`; never encode relationships with group IDs
+9. Resolve projects and item references only by exact ID, exact name/title, or a unique alias. If the Board reports ambiguity, stop and ask rather than guessing
+10. Use `agent_board_get_task` to check status when Dan asks for progress
+11. Use `timeout_minutes` for work expected to exceed the 60-minute Board default. If a task times out, call `agent_board_retry_task` on the existing card with a larger limit; never bypass tracking by launching the named coding agent directly
 
 ## Safety
 

@@ -1,9 +1,11 @@
-import type { Task, AgentEvent } from '../types.js';
+import type { Task, AgentEvent, TaskRelationship } from '../types.js';
 
 export interface TaskRepository {
   getAll(includeArchived?: boolean, projectId?: string): Promise<Task[]>;
   getById(id: string): Promise<Task | undefined>;
   getByExternalIdentity(source: string, key: string): Promise<Task | undefined>;
+  /** Resolve an exact id first, otherwise exact title matches in one project. */
+  resolve(reference: string, projectId: string): Promise<Task[]>;
   create(task: Task): Promise<Task>;
   createIdempotent(task: Task): Promise<{ task: Task; created: boolean }>;
   requestRun(id: string, requestedAt: number): Promise<Task | undefined>;
@@ -17,4 +19,7 @@ export interface TaskRepository {
   getEventsByTaskId(taskId: string): Promise<AgentEvent[]>;
   deleteEventsByTaskId(taskId: string): Promise<void>;
   getArchivedTasks(projectId?: string): Promise<Task[]>;
+  getRelationships(taskId: string): Promise<TaskRelationship[]>;
+  createRelationship(taskId: string, relatedTaskId: string, createdAt: number): Promise<{ relationship: TaskRelationship; created: boolean }>;
+  deleteRelationship(taskId: string, relatedTaskId: string): Promise<boolean>;
 }

@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import type { Task } from '../types.js';
 import type { TaskRepository } from '../repositories/types.js';
 import type { ProjectRepository } from '../repositories/project-types.js';
 import type { AgentManager } from '../services/agent-manager.js';
@@ -61,6 +62,23 @@ function taskLink(req: Request, projectId: string, taskId: string): string {
   const configured = process.env.AGENT_BOARD_PUBLIC_URL?.trim().replace(/\/$/, '');
   const origin = configured || `${req.protocol}://${req.get('host')}`;
   return `${origin}/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}`;
+}
+
+async function resolveRelatedTask(repo: TaskRepository, projectId: string, reference: unknown, res: Response): Promise<Task | undefined> {
+  if (typeof reference !== 'string' || !reference.trim()) {
+    res.status(400).json({ error: 'relatedItem must be an exact task id or title' });
+    return undefined;
+  }
+  const matches = await repo.resolve(reference, projectId);
+  if (!matches.length) {
+    res.status(404).json({ error: 'related task not found in selected project' });
+    return undefined;
+  }
+  if (matches.length > 1) {
+    res.status(409).json({ error: 'related task reference is ambiguous', matches: matches.map(({ id, title }) => ({ id, title })) });
+    return undefined;
+  }
+  return matches[0];
 }
 
 export function createOrchestrationsRouter(
@@ -169,6 +187,69 @@ export function createOrchestrationsRouter(
       return;
     }
 
+    const existingReference = req.body.task ?? req.body.taskId ?? req.body.item ?? req.body.itemId ?? req.body.continueTask ?? req.body.continueTaskId;
+    const relatedReference = req.body.relatedItem ?? req.body.relatedTask ?? req.body.relatedTaskId;
+    if (existingReference !== undefined) {
+      if (typeof existingReference !== 'string' || !existingReference.trim()) {
+        res.status(400).json({ error: 'task must be an exact id or title' }); return;
+      }
+      const taskMatches = await repo.resolve(existingReference, project.id);
+      if (!taskMatches.length) { res.status(404).json({ error: 'task not found in selected project' }); return; }
+      if (taskMatches.length > 1) {
+        res.status(409).json({ error: 'task reference is ambiguous', matches: taskMatches.map(({ id, title }) => ({ id, title })) }); return;
+      }
+      const existing = taskMatches[0];
+      if (agents.isRunning(existing.id)) {
+        res.status(409).json({ error: 'agent is already running for this task; use the message endpoint' }); return;
+      }
+      const requestedAgent = req.body.agentType ?? req.body.agent ?? existing.agentType;
+      if (!isValidAgentType(requestedAgent)) { res.status(400).json({ error: 'agent must be a supported agent type' }); return; }
+      const autoStart = req.body.autoStart ?? req.body.auto_start ?? true;
+      if (typeof autoStart !== 'boolean') { res.status(400).json({ error: 'autoStart must be a boolean' }); return; }
+      const timeoutMinutes = req.body.timeoutMinutes ?? req.body.timeout_minutes ?? existing.timeoutMinutes;
+      if (timeoutMinutes !== undefined && timeoutMinutes !== null && !isValidAgentTimeoutMinutes(timeoutMinutes)) {
+        res.status(400).json({ error: `timeoutMinutes must be an integer between ${MIN_AGENT_TIMEOUT_MINUTES} and ${MAX_AGENT_TIMEOUT_MINUTES}` }); return;
+      }
+      if (autoStart) {
+        const ready = agents.getAvailableAgents().find((agent) => agent.name === requestedAgent);
+        if (!ready?.available) { res.status(409).json({ error: `agent ${requestedAgent} is not ready`, reason: ready?.reason }); return; }
+      }
+      if (relatedReference !== undefined) {
+        const related = await resolveRelatedTask(repo, project.id, relatedReference, res);
+        if (!related) return;
+        if (related.id === existing.id) { res.status(400).json({ error: 'a task cannot be related to itself' }); return; }
+        await repo.createRelationship(existing.id, related.id, Date.now());
+      }
+      const continuationDescription = req.body.description;
+      if (continuationDescription !== undefined && typeof continuationDescription !== 'string') {
+        res.status(400).json({ error: 'description must be a string' }); return;
+      }
+      if (typeof continuationDescription === 'string' && continuationDescription.length > MAX_DESCRIPTION_LENGTH) {
+        res.status(400).json({ error: `description must be at most ${MAX_DESCRIPTION_LENGTH} characters` }); return;
+      }
+      const reset = await repo.update(existing.id, {
+        agentType: requestedAgent,
+        description: continuationDescription ?? existing.description,
+        agentStatus: 'idle',
+        columnId: autoStart ? 'in-progress' : 'backlog',
+        archived: false,
+        startedAt: undefined,
+        completedAt: undefined,
+        runRequestedAt: undefined,
+        runClaimedAt: undefined,
+        timeoutMinutes,
+      });
+      if (!reset) { res.status(500).json({ error: 'failed to continue task' }); return; }
+      if (autoStart) await repo.requestRun(reset.id, Date.now());
+      broadcastTaskUpdate(reset);
+      if (autoStart) queueMicrotask(() => {
+        void startAgentForTask(reset, repo, agents).catch((err) => console.error(`[orchestrations] failed to continue task ${reset.id}:`, err));
+      });
+      const deepLink = taskLink(req, reset.projectId, reset.id);
+      res.status(202).json({ task: reset, continuation: true, contract: { projectId: reset.projectId, taskId: reset.id, deepLink } });
+      return;
+    }
+
     const agentType = req.body.agentType ?? req.body.agent;
     if (!isValidAgentType(agentType)) {
       res.status(400).json({ error: 'agent is required and must be a supported agent type' });
@@ -244,6 +325,11 @@ export function createOrchestrationsRouter(
       }
     }
 
+    const relatedTask = relatedReference === undefined
+      ? undefined
+      : await resolveRelatedTask(repo, project.id, relatedReference, res);
+    if (relatedReference !== undefined && !relatedTask) return;
+
     const task = buildTask({
       title,
       description,
@@ -276,6 +362,7 @@ export function createOrchestrationsRouter(
         res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' });
         return;
       }
+      if (relatedTask) await repo.createRelationship(result.task.id, relatedTask.id, Date.now());
       res.status(200).set('Idempotent-Replay', 'true').json({
         task: result.task,
         contract: { projectId: result.task.projectId, taskId: result.task.id, deepLink },
@@ -283,6 +370,7 @@ export function createOrchestrationsRouter(
       return;
     }
 
+    if (relatedTask) await repo.createRelationship(task.id, relatedTask.id, Date.now());
     broadcastTaskUpdate(task);
     if (autoStart) {
       queueMicrotask(() => {

@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import type { Task, Priority, ColumnId, AgentStatus, AgentType, AgentEvent } from '../types.js';
+import type { Task, Priority, ColumnId, AgentStatus, AgentType, AgentEvent, TaskRelationship } from '../types.js';
 import type { TaskRepository } from './types.js';
 import { isValidPriority, isValidColumnId, isValidAgentStatus, isValidAgentType } from '@ai-agent-board/shared/constants.js';
 import { errorMessage } from '../utils.js';
@@ -104,6 +104,14 @@ export class PostgresTaskRepository implements TaskRepository {
 
   async getByExternalIdentity(source: string, key: string): Promise<Task | undefined> {
     const { rows } = await this.pool.query<TaskRow>('SELECT * FROM tasks WHERE external_source=$1 AND external_key=$2', [source,key]); return rows[0] ? rowToTask(rows[0]) : undefined;
+  }
+
+  async resolve(reference: string, projectId: string): Promise<Task[]> {
+    const needle = reference.trim();
+    const exact = await this.getById(needle);
+    if (exact) return exact.projectId === projectId ? [exact] : [];
+    const { rows } = await this.pool.query<TaskRow>('SELECT * FROM tasks WHERE project_id=$1 AND lower(title)=lower($2) ORDER BY created_at,id', [projectId, needle]);
+    return rows.map(rowToTask);
   }
 
   async create(task: Task): Promise<Task> {
@@ -269,5 +277,27 @@ export class PostgresTaskRepository implements TaskRepository {
       [projectId],
     );
     return rows.map(rowToTask);
+  }
+
+  async getRelationships(taskId: string): Promise<TaskRelationship[]> {
+    const { rows } = await this.pool.query<{ task_id: string; related_task_id: string; type: 'related'; created_at: string }>(
+      'SELECT task_id, related_task_id, type, created_at FROM task_relationships WHERE task_id=$1 OR related_task_id=$1 ORDER BY created_at, task_id, related_task_id', [taskId]);
+    return rows.map((row) => ({ taskId, relatedTaskId: row.task_id === taskId ? row.related_task_id : row.task_id, type: row.type, createdAt: Number(row.created_at) }));
+  }
+
+  async createRelationship(taskId: string, relatedTaskId: string, createdAt: number): Promise<{ relationship: TaskRelationship; created: boolean }> {
+    if (taskId === relatedTaskId) throw new Error('a task cannot be related to itself');
+    const [left, right] = taskId < relatedTaskId ? [taskId, relatedTaskId] : [relatedTaskId, taskId];
+    const { rows } = await this.pool.query<{ created_at: string }>(`INSERT INTO task_relationships(task_id,related_task_id,type,created_at)
+      SELECT $1,$2,'related',$3 FROM tasks a JOIN tasks b ON b.id=$2 WHERE a.id=$1 AND a.project_id=b.project_id
+      ON CONFLICT(task_id,related_task_id) DO NOTHING RETURNING created_at`, [left, right, createdAt]);
+    const persisted = rows[0] ?? (await this.pool.query<{ created_at: string }>('SELECT created_at FROM task_relationships WHERE task_id=$1 AND related_task_id=$2', [left, right])).rows[0];
+    if (!persisted) throw new Error('tasks must exist in the same project');
+    return { relationship: { taskId, relatedTaskId, type: 'related', createdAt: Number(persisted.created_at) }, created: rows.length > 0 };
+  }
+
+  async deleteRelationship(taskId: string, relatedTaskId: string): Promise<boolean> {
+    const [left, right] = taskId < relatedTaskId ? [taskId, relatedTaskId] : [relatedTaskId, taskId];
+    return ((await this.pool.query('DELETE FROM task_relationships WHERE task_id=$1 AND related_task_id=$2', [left, right])).rowCount ?? 0) > 0;
   }
 }

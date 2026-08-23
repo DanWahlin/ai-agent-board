@@ -330,6 +330,71 @@ test('persisted request identity authoritatively replays after task and project 
   } finally { db.close(); }
 });
 
+test('legacy snapshots without request replay create, continuation, and retry while rejecting known changes', async () => {
+  const db = makeDb();
+  const repo = new SqliteTaskRepository(db);
+  try {
+    const legacyCreateTask = { ...task('legacy-create-card', 'project-a', 'Renamed after create'), description: 'mutated' };
+    const legacyContinuationTask = { ...task('legacy-continuation-card', 'project-a', 'Renamed after continuation'), description: 'mutated' };
+    const legacyRetryTask = { ...task('legacy-retry-card', 'project-a', 'Renamed after retry'), description: 'mutated', agentStatus: 'idle' as const };
+    await repo.create(legacyCreateTask);
+    await repo.create(legacyContinuationTask);
+    await repo.create(legacyRetryTask);
+
+    const legacyAttempts: ExecutionAttempt[] = [
+      { ...attempt('legacy-create-attempt', legacyCreateTask.id, 'legacy-create-key'), titleSnapshot: 'Original create',
+        requestSnapshot: JSON.stringify({ kind: 'create', projectId: 'project-a', taskId: null, title: 'Original create', description: '',
+          priority: 'medium', agent: 'hermes', baseBranch: 'main', branchName: 'agent/original', timeoutMinutes: null,
+          autoStart: false, relatedTaskId: null, provenance: null }) },
+      { ...attempt('legacy-continuation-attempt', legacyContinuationTask.id, 'legacy-continuation-key'),
+        titleSnapshot: 'Original continuation title', descriptionSnapshot: 'Original continuation',
+        requestSnapshot: JSON.stringify({ kind: 'continuation', projectId: 'project-a', taskId: legacyContinuationTask.id,
+          title: 'Original continuation title', description: 'Original continuation', priority: 'medium', agent: 'hermes',
+          baseBranch: 'main', branchName: 'agent/legacy-continuation-card', timeoutMinutes: null, autoStart: false,
+          relatedTaskId: null, provenance: null }) },
+      { ...attempt('legacy-retry-attempt', legacyRetryTask.id, 'legacy-retry-key'), autoStart: true, status: 'dispatched',
+        titleSnapshot: 'Original retry title', descriptionSnapshot: 'Original retry description',
+        requestSnapshot: JSON.stringify({ kind: 'retry', projectId: 'project-a', taskId: legacyRetryTask.id,
+          title: 'Original retry title', description: 'Original retry description', priority: 'medium', agent: 'hermes',
+          baseBranch: 'main', branchName: 'agent/legacy-retry-card', timeoutMinutes: null, autoStart: true,
+          relatedTaskId: null, provenance: { sourceSession: 'original' } }) },
+    ];
+    for (const legacyAttempt of legacyAttempts) assert.equal((await repo.createAttemptIdempotent(legacyAttempt)).created, true);
+
+    await withApi(repo, async (base) => {
+      let response = await fetch(`${base}/api/orchestrations`, { method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': 'legacy-create-key' },
+        body: JSON.stringify({ project: 'alpha', agent: 'hermes', title: 'Original create', autoStart: false }) });
+      assert.equal(response.status, 200);
+      assert.equal((await response.json() as { attempt: ExecutionAttempt }).attempt.id, 'legacy-create-attempt');
+      response = await fetch(`${base}/api/orchestrations`, { method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': 'legacy-create-key' },
+        body: JSON.stringify({ project: 'alpha', agent: 'hermes', title: 'Changed create', autoStart: false }) });
+      assert.equal(response.status, 409);
+
+      const continuationHeaders = { 'content-type': 'application/json', 'idempotency-key': 'legacy-continuation-key' };
+      response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: continuationHeaders,
+        body: JSON.stringify({ project: 'alpha', task: legacyContinuationTask.id, description: 'Original continuation', autoStart: false }) });
+      assert.equal(response.status, 200);
+      const continuationReplay = await response.json() as { attempt: ExecutionAttempt; continuation: boolean };
+      assert.equal(continuationReplay.attempt.id, 'legacy-continuation-attempt');
+      assert.equal(continuationReplay.continuation, true);
+      response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: continuationHeaders,
+        body: JSON.stringify({ project: 'alpha', task: legacyContinuationTask.id, description: 'Changed continuation', autoStart: false }) });
+      assert.equal(response.status, 409);
+
+      const retryHeaders = { 'content-type': 'application/json', 'idempotency-key': 'legacy-retry-key' };
+      response = await fetch(`${base}/api/orchestrations/${legacyRetryTask.id}/retry`, { method: 'POST', headers: retryHeaders,
+        body: JSON.stringify({ provenance: { sourceSession: 'original' } }) });
+      assert.equal(response.status, 200);
+      assert.equal((await response.json() as { attempt: ExecutionAttempt }).attempt.id, 'legacy-retry-attempt');
+      response = await fetch(`${base}/api/orchestrations/${legacyRetryTask.id}/retry`, { method: 'POST', headers: retryHeaders,
+        body: JSON.stringify({ provenance: { sourceSession: 'changed' } }) });
+      assert.equal(response.status, 409);
+    });
+  } finally { db.close(); }
+});
+
 test('queued continuation cannot overwrite durable active execution state', async () => {
   const db = makeDb();
   const repo = new SqliteTaskRepository(db);

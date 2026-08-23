@@ -88,7 +88,20 @@ function taskLink(req: Request, projectId: string, taskId: string): string {
 }
 
 function attemptConflicts(actual: ExecutionAttempt, expected: ExecutionAttempt): boolean {
-  return actual.requestSnapshot !== expected.requestSnapshot;
+  if (actual.requestSnapshot === expected.requestSnapshot) return false;
+  try {
+    const actualSnapshot = JSON.parse(actual.requestSnapshot) as Record<string, unknown>;
+    const expectedSnapshot = JSON.parse(expected.requestSnapshot) as Record<string, unknown>;
+    // request was added after orchestration attempts were already in production.
+    // Compare pre-upgrade rows against the pre-upgrade shape.
+    if (!actualSnapshot.request || typeof actualSnapshot.request !== 'object' || Array.isArray(actualSnapshot.request)) {
+      delete expectedSnapshot.request;
+      return canonicalJson(actualSnapshot) !== canonicalJson(expectedSnapshot);
+    }
+  } catch {
+    // A malformed stored snapshot cannot safely be normalized.
+  }
+  return true;
 }
 
 type RequestIdentity = Record<string, unknown>;
@@ -147,6 +160,69 @@ function hasStoredRequestIdentity(attempt: ExecutionAttempt): boolean {
     const snapshot = JSON.parse(attempt.requestSnapshot) as Record<string, unknown>;
     return !!snapshot.request && typeof snapshot.request === 'object' && !Array.isArray(snapshot.request);
   } catch { return false; }
+}
+
+function storedSnapshot(attempt: ExecutionAttempt): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(attempt.requestSnapshot);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch { return {}; }
+}
+
+async function legacyRequestConflicts(
+  attempt: ExecutionAttempt,
+  identity: RequestIdentity,
+  repo: TaskRepository,
+  projects: ProjectRepository,
+): Promise<boolean> {
+  const snapshot = storedSnapshot(attempt);
+  const kind = identity.kind;
+  if (typeof snapshot.kind === 'string' && snapshot.kind !== kind) return true;
+
+  const compare = (requestKey: string, snapshotKey = requestKey): boolean => {
+    if (identity[requestKey] === undefined) return false;
+    const stored = snapshot[snapshotKey];
+    return stored !== undefined && canonicalJson(identity[requestKey]) !== canonicalJson(stored);
+  };
+  for (const key of ['title', 'description', 'priority', 'agent', 'baseBranch', 'branchName', 'timeoutMinutes', 'autoStart', 'provenance']) {
+    if (compare(key)) return true;
+  }
+
+  // Required create fields can still be checked from attempt columns when the
+  // legacy request snapshot is the migration default (`{}`).
+  if (kind === 'create') {
+    if (identity.title === undefined || identity.agent === undefined || identity.project === undefined) return true;
+    if (snapshot.title === undefined && identity.title !== attempt.titleSnapshot) return true;
+    if (snapshot.agent === undefined && identity.agent !== attempt.agentType) return true;
+    if (identity.useWorktree === false || (identity.isolation !== undefined && identity.isolation !== 'worktree')) return true;
+  }
+
+  const projectId = typeof snapshot.projectId === 'string' ? snapshot.projectId : undefined;
+  if (typeof identity.project === 'string' && projectId) {
+    const matches = await projects.resolve(identity.project);
+    if (matches.length && !matches.some((project) => project.id === projectId)) return true;
+  }
+
+  if (kind === 'continuation' && typeof identity.task === 'string') {
+    if (projectId) {
+      const matches = await repo.resolve(identity.task, projectId);
+      if (matches.length && !matches.some((task) => task.id === attempt.taskId)) return true;
+    }
+  } else if (kind === 'retry' && typeof identity.target === 'string') {
+    const addressedAttempt = await repo.getAttemptById(identity.target);
+    const addressedTask = await repo.getById(addressedAttempt?.taskId ?? identity.target);
+    if (addressedTask && addressedTask.id !== attempt.taskId) return true;
+  }
+
+  if (identity.relatedTask !== undefined) {
+    const storedRelated = typeof snapshot.relatedTaskId === 'string' ? snapshot.relatedTaskId : attempt.relatedTaskId;
+    if (!storedRelated) return true;
+    if (projectId && typeof identity.relatedTask === 'string') {
+      const matches = await repo.resolve(identity.relatedTask, projectId);
+      if (matches.length && !matches.some((task) => task.id === storedRelated)) return true;
+    }
+  }
+  return false;
 }
 
 function replayResponse(req: Request, res: Response, task: Task, attempt: ExecutionAttempt, continuation = false): void {
@@ -226,8 +302,11 @@ export function createOrchestrationsRouter(
     if (key.length > 200) { res.status(400).json({ error: 'Idempotency-Key is too long' }); return; }
     const requestIdentity = retryRequestIdentity(String(req.params.id), req.body);
     const earlyReplay = await repo.getAttemptByExternalIdentity('hermes', key);
-    if (earlyReplay && hasStoredRequestIdentity(earlyReplay)) {
-      if (conflictsWithRequest(earlyReplay, requestIdentity)) {
+    if (earlyReplay) {
+      const conflict = hasStoredRequestIdentity(earlyReplay)
+        ? conflictsWithRequest(earlyReplay, requestIdentity)
+        : await legacyRequestConflicts(earlyReplay, requestIdentity, repo, projects);
+      if (conflict) {
         res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' }); return;
       }
       const replayTask = await repo.getById(earlyReplay.taskId);
@@ -318,14 +397,18 @@ export function createOrchestrationsRouter(
     const requestIdentity = orchestrationRequestIdentity(req.body);
     if (suppliedKey && suppliedKey.length <= 200) {
       const earlyReplay = await repo.getAttemptByExternalIdentity('hermes', suppliedKey);
-      if (earlyReplay && hasStoredRequestIdentity(earlyReplay)) {
-        if (conflictsWithRequest(earlyReplay, requestIdentity)) {
+      if (earlyReplay) {
+        const conflict = hasStoredRequestIdentity(earlyReplay)
+          ? conflictsWithRequest(earlyReplay, requestIdentity)
+          : await legacyRequestConflicts(earlyReplay, requestIdentity, repo, projects);
+        if (conflict) {
           res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' }); return;
         }
         const replayTask = await repo.getById(earlyReplay.taskId);
         if (!replayTask) { res.status(500).json({ error: 'execution attempt references a missing task' }); return; }
-        let continuation = false;
-        try { continuation = JSON.parse(earlyReplay.requestSnapshot).request?.kind === 'continuation'; } catch { /* legacy */ }
+        const snapshot = storedSnapshot(earlyReplay);
+        const continuation = (snapshot.request as Record<string, unknown> | undefined)?.kind === 'continuation'
+          || snapshot.kind === 'continuation';
         replayResponse(req, res, replayTask, earlyReplay, continuation);
         return;
       }

@@ -1,8 +1,8 @@
 import type { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 
-export type ServiceScope = 'projects:read' | 'agents:read' | 'orchestrations:create' | 'orchestrations:read' | 'orchestrations:message';
-const ALL_SERVICE_SCOPES: ServiceScope[] = ['projects:read', 'agents:read', 'orchestrations:create', 'orchestrations:read', 'orchestrations:message'];
+export type ServiceScope = 'projects:read' | 'agents:read' | 'orchestrations:create' | 'orchestrations:read' | 'orchestrations:message' | 'tasks:relationships';
+const ALL_SERVICE_SCOPES: ServiceScope[] = ['projects:read', 'agents:read', 'orchestrations:create', 'orchestrations:read', 'orchestrations:message', 'tasks:relationships'];
 
 interface Credential { token?: string; sha256?: string; scopes: ServiceScope[] }
 
@@ -28,7 +28,7 @@ export function authenticateToken(token: string | undefined): { authenticated: b
   return match ? { authenticated:true,legacy:false,scopes:match.scopes } : { authenticated:false,legacy:false,scopes:[] };
 }
 
-function requiredScope(req: Request): ServiceScope | undefined {
+export function requiredScope(req: Request): ServiceScope | undefined {
   const p=req.path, method=req.method;
   if (p === '/health') return undefined;
   if (p === '/agents') return undefined;
@@ -38,6 +38,7 @@ function requiredScope(req: Request): ServiceScope | undefined {
   if (/^\/orchestrations\/[^/]+\/retry$/.test(p) && method === 'POST') return 'orchestrations:create';
   if (/^\/orchestrations\/[^/]+$/.test(p) && method === 'GET') return 'orchestrations:read';
   if (/^\/orchestrations\/[^/]+\/message$/.test(p) && method === 'POST') return 'orchestrations:message';
+  if (/^\/tasks\/[^/]+\/relationships(?:\/[^/]+)?$/.test(p) && (method === 'POST' || method === 'DELETE')) return 'tasks:relationships';
   if (p.startsWith('/tasks') || p.startsWith('/groups')) {
     return undefined;
   }

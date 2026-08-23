@@ -50,6 +50,22 @@ export interface TaskRelationship {
   createdAt: number;
 }
 
+/** Immutable request snapshot for one execution of a durable Board card. */
+export interface ExecutionAttempt {
+  id: string;
+  taskId: string;
+  externalSource: string;
+  externalKey: string;
+  titleSnapshot: string;
+  descriptionSnapshot: string;
+  agentType: AgentType;
+  relatedTaskId?: string;
+  autoStart: boolean;
+  timeoutMinutes?: number | null;
+  status: 'pending' | 'dispatched';
+  createdAt: number;
+}
+
 export interface TaskProvenance {
   sourceProfile?: string;
   sourcePlatform?: string;

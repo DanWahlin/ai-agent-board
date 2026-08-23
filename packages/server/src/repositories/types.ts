@@ -1,4 +1,4 @@
-import type { Task, AgentEvent, TaskRelationship } from '../types.js';
+import type { Task, AgentEvent, TaskRelationship, ExecutionAttempt } from '../types.js';
 
 export interface TaskRepository {
   getAll(includeArchived?: boolean, projectId?: string): Promise<Task[]>;
@@ -22,4 +22,8 @@ export interface TaskRepository {
   getRelationships(taskId: string): Promise<TaskRelationship[]>;
   createRelationship(taskId: string, relatedTaskId: string, createdAt: number): Promise<{ relationship: TaskRelationship; created: boolean }>;
   deleteRelationship(taskId: string, relatedTaskId: string): Promise<boolean>;
+  getAttemptById(id: string): Promise<ExecutionAttempt | undefined>;
+  getAttemptByExternalIdentity(source: string, key: string): Promise<ExecutionAttempt | undefined>;
+  getAttemptsByTaskId(taskId: string): Promise<ExecutionAttempt[]>;
+  createAttemptIdempotent(attempt: ExecutionAttempt): Promise<{ attempt: ExecutionAttempt; created: boolean }>;
 }

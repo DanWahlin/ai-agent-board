@@ -177,7 +177,14 @@ async function legacyRequestConflicts(
 ): Promise<boolean> {
   const snapshot = storedSnapshot(attempt);
   const kind = identity.kind;
-  if (typeof snapshot.kind === 'string' && snapshot.kind !== kind) return true;
+  // Migration backfills represent the original task-creation request even
+  // though they deliberately use a distinct marker from native attempts.
+  if (typeof snapshot.kind === 'string'
+      && snapshot.kind !== kind
+      && !(snapshot.kind === 'legacy-task-backfill' && kind === 'create')) return true;
+
+  const attemptTask = await repo.getById(attempt.taskId);
+  if (!attemptTask) return true;
 
   const compare = (requestKey: string, snapshotKey = requestKey): boolean => {
     if (identity[requestKey] === undefined) return false;
@@ -188,40 +195,82 @@ async function legacyRequestConflicts(
     if (compare(key)) return true;
   }
 
-  // Required create fields can still be checked from attempt columns when the
-  // legacy request snapshot is the migration default (`{}`).
-  if (kind === 'create') {
-    if (identity.title === undefined || identity.agent === undefined || identity.project === undefined) return true;
-    if (snapshot.title === undefined && identity.title !== attempt.titleSnapshot) return true;
-    if (snapshot.agent === undefined && identity.agent !== attempt.agentType) return true;
-    if (identity.useWorktree === false || (identity.isolation !== undefined && identity.isolation !== 'worktree')) return true;
+  // Project and target references must resolve uniquely to the task owned by
+  // the stored attempt. An absent snapshot must never turn an unresolvable or
+  // differently addressed continuation/retry into a replay.
+  if (kind === 'create' || kind === 'continuation') {
+    if (typeof identity.project !== 'string' || !identity.project.trim()) return true;
+    const projectMatches = await projects.resolve(identity.project);
+    if (projectMatches.length !== 1 || projectMatches[0].id !== attemptTask.projectId) return true;
+    if (typeof snapshot.projectId === 'string' && snapshot.projectId !== attemptTask.projectId) return true;
   }
-
-  const projectId = typeof snapshot.projectId === 'string' ? snapshot.projectId : undefined;
-  if (typeof identity.project === 'string' && projectId) {
-    const matches = await projects.resolve(identity.project);
-    if (matches.length && !matches.some((project) => project.id === projectId)) return true;
-  }
-
-  if (kind === 'continuation' && typeof identity.task === 'string') {
-    if (projectId) {
-      const matches = await repo.resolve(identity.task, projectId);
-      if (matches.length && !matches.some((task) => task.id === attempt.taskId)) return true;
-    }
-  } else if (kind === 'retry' && typeof identity.target === 'string') {
+  if (kind === 'continuation') {
+    if (typeof identity.task !== 'string' || !identity.task.trim()) return true;
+    const taskMatches = await repo.resolve(identity.task, attemptTask.projectId);
+    if (taskMatches.length !== 1 || taskMatches[0].id !== attempt.taskId) return true;
+  } else if (kind === 'retry') {
+    if (typeof identity.target !== 'string' || !identity.target.trim()) return true;
     const addressedAttempt = await repo.getAttemptById(identity.target);
     const addressedTask = await repo.getById(addressedAttempt?.taskId ?? identity.target);
-    if (addressedTask && addressedTask.id !== attempt.taskId) return true;
+    if (!addressedTask || addressedTask.id !== attempt.taskId) return true;
   }
 
-  if (identity.relatedTask !== undefined) {
-    const storedRelated = typeof snapshot.relatedTaskId === 'string' ? snapshot.relatedTaskId : attempt.relatedTaskId;
-    if (!storedRelated) return true;
-    if (projectId && typeof identity.relatedTask === 'string') {
-      const matches = await repo.resolve(identity.relatedTask, projectId);
-      if (matches.length && !matches.some((task) => task.id === storedRelated)) return true;
+  // Old schemas defaulted request_snapshot to `{}`. Compare all request
+  // values recoverable from execution_attempts, resolving omitted continuation
+  // defaults from the addressed task. This intentionally fails closed after a
+  // task mutation rather than blessing an identity that can no longer be
+  // established.
+  const effective = (key: string): unknown => {
+    if (identity[key] !== undefined) return identity[key];
+    if (kind === 'create') {
+      if (key === 'description') return '';
+      if (key === 'timeoutMinutes') return undefined;
     }
+    if (kind === 'continuation') {
+      if (key === 'title') return attemptTask.title;
+      if (key === 'description') return attemptTask.description;
+      if (key === 'agent') return attemptTask.agentType;
+      if (key === 'timeoutMinutes') return attemptTask.timeoutMinutes;
+    }
+    if (kind === 'retry') {
+      if (key === 'timeoutMinutes') return attemptTask.timeoutMinutes;
+      if (key === 'autoStart') return true;
+    }
+    return undefined;
+  };
+  const columnValues: Array<[string, unknown]> = [
+    ['title', attempt.titleSnapshot],
+    ['description', attempt.descriptionSnapshot],
+    ['agent', attempt.agentType],
+    ['autoStart', attempt.autoStart],
+    ['timeoutMinutes', attempt.timeoutMinutes],
+  ];
+  for (const [key, stored] of columnValues) {
+    if (snapshot[key] !== undefined) continue;
+    if (kind === 'retry' && !['autoStart', 'timeoutMinutes'].includes(key)) continue;
+    if (canonicalJson(effective(key)) !== canonicalJson(stored)) return true;
   }
+  if (kind === 'retry' && attempt.autoStart !== true) return true;
+  if (kind === 'create'
+      && (identity.title === undefined || identity.agent === undefined
+        || identity.useWorktree === false || (identity.isolation !== undefined && identity.isolation !== 'worktree'))) return true;
+
+  const storedRelated = typeof snapshot.relatedTaskId === 'string' ? snapshot.relatedTaskId : attempt.relatedTaskId;
+  if (identity.relatedTask === undefined) {
+    if (snapshot.relatedTaskId === undefined && storedRelated !== undefined) return true;
+  } else {
+    if (typeof identity.relatedTask !== 'string' || !storedRelated) return true;
+    const relatedMatches = await repo.resolve(identity.relatedTask, attemptTask.projectId);
+    if (relatedMatches.length !== 1 || relatedMatches[0].id !== storedRelated) return true;
+  }
+
+  // These request attributes have no execution_attempt column fallback.
+  // If the legacy snapshot did not capture one, only its omitted/default form
+  // can be accepted safely.
+  for (const key of ['priority', 'baseBranch', 'branchName']) {
+    if (snapshot[key] === undefined && identity[key] !== undefined) return true;
+  }
+  if (snapshot.provenance === undefined && identity.provenance !== null) return true;
   return false;
 }
 

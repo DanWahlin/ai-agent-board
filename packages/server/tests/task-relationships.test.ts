@@ -5,6 +5,7 @@ import express from 'express';
 import Database from 'better-sqlite3';
 import { SqliteTaskRepository } from '../src/repositories/sqlite.js';
 import { PostgresTaskRepository } from '../src/repositories/postgres.js';
+import { migrateSqliteDatabase } from '../src/db.js';
 import { createTaskRouter } from '../src/routes/tasks.js';
 import { createOrchestrationsRouter } from '../src/routes/orchestrations.js';
 import type { Task, Project, ExecutionAttempt } from '../src/types.js';
@@ -390,6 +391,93 @@ test('legacy snapshots without request replay create, continuation, and retry wh
       assert.equal((await response.json() as { attempt: ExecutionAttempt }).attempt.id, 'legacy-retry-attempt');
       response = await fetch(`${base}/api/orchestrations/${legacyRetryTask.id}/retry`, { method: 'POST', headers: retryHeaders,
         body: JSON.stringify({ provenance: { sourceSession: 'changed' } }) });
+      assert.equal(response.status, 409);
+    });
+  } finally { db.close(); }
+});
+
+test('migration-backfilled attempts replay their original create request', async () => {
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys=ON');
+  migrateSqliteDatabase(db);
+  const repo = new SqliteTaskRepository(db);
+  try {
+    const migratedTask = { ...task('migrated-card', 'default', 'Migrated work'), description: 'legacy description',
+      externalSource: 'hermes', externalKey: 'migrated-key', timeoutMinutes: 45 };
+    await repo.create(migratedTask);
+    migrateSqliteDatabase(db);
+    const migratedAttempt = await repo.getAttemptByExternalIdentity('hermes', 'migrated-key');
+    assert.ok(migratedAttempt);
+    assert.equal(JSON.parse(migratedAttempt.requestSnapshot).kind, 'legacy-task-backfill');
+    const migratedProject = { ...project, id: 'default', name: 'Default', aliases: ['alpha'] };
+    const migratedProjects = {
+      getById: async (id: string) => id === migratedProject.id ? migratedProject : undefined,
+      resolve: async (ref: string) => ['default', 'alpha'].includes(ref.toLowerCase()) ? [migratedProject] : [],
+    } as ProjectRepository;
+
+    await withApi(repo, async (base) => {
+      const headers = { 'content-type': 'application/json', 'idempotency-key': 'migrated-key' };
+      let response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers,
+        body: JSON.stringify({ project: 'alpha', title: 'Migrated work', description: 'legacy description',
+          agent: 'hermes', timeoutMinutes: 45, autoStart: false }) });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('idempotent-replay'), 'true');
+      assert.equal((await response.json() as { attempt: ExecutionAttempt }).attempt.id, migratedAttempt.id);
+
+      response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers,
+        body: JSON.stringify({ project: 'alpha', title: 'Different work', description: 'legacy description',
+          agent: 'hermes', timeoutMinutes: 45, autoStart: false }) });
+      assert.equal(response.status, 409);
+    }, agents, migratedProjects);
+  } finally { db.close(); }
+});
+
+test('default legacy snapshots compare attempt columns and bind continuation and retry targets', async () => {
+  const db = makeDb();
+  const repo = new SqliteTaskRepository(db);
+  try {
+    const createTask = { ...task('column-create', 'project-a', 'Column create'), description: 'column description', timeoutMinutes: 30 };
+    const continuationTask = { ...task('column-continuation', 'project-a', 'Column continuation'),
+      description: 'continuation description', timeoutMinutes: 45 };
+    const retryTask = { ...task('column-retry', 'project-a', 'Column retry'), timeoutMinutes: 60 };
+    const otherTask = task('column-other', 'project-a', 'Column other');
+    for (const item of [createTask, continuationTask, retryTask, otherTask]) await repo.create(item);
+    const attempts: ExecutionAttempt[] = [
+      { ...attempt('column-create-attempt', createTask.id, 'column-create-key'), titleSnapshot: createTask.title,
+        descriptionSnapshot: createTask.description, timeoutMinutes: 30 },
+      { ...attempt('column-continuation-attempt', continuationTask.id, 'column-continuation-key'), titleSnapshot: continuationTask.title,
+        descriptionSnapshot: continuationTask.description, timeoutMinutes: 45 },
+      { ...attempt('column-retry-attempt', retryTask.id, 'column-retry-key'), autoStart: true, status: 'dispatched', timeoutMinutes: 60 },
+    ];
+    for (const legacyAttempt of attempts) assert.equal((await repo.createAttemptIdempotent(legacyAttempt)).created, true);
+
+    await withApi(repo, async (base) => {
+      const createHeaders = { 'content-type': 'application/json', 'idempotency-key': 'column-create-key' };
+      let response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: createHeaders,
+        body: JSON.stringify({ project: 'alpha', title: createTask.title, description: createTask.description,
+          agent: 'hermes', timeoutMinutes: 30, autoStart: false }) });
+      assert.equal(response.status, 200);
+      response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: createHeaders,
+        body: JSON.stringify({ project: 'alpha', title: createTask.title, description: 'changed',
+          agent: 'hermes', timeoutMinutes: 30, autoStart: false }) });
+      assert.equal(response.status, 409);
+
+      const continuationHeaders = { 'content-type': 'application/json', 'idempotency-key': 'column-continuation-key' };
+      response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: continuationHeaders,
+        body: JSON.stringify({ project: 'alpha', task: continuationTask.id, title: continuationTask.title,
+          description: continuationTask.description, agent: 'hermes', timeoutMinutes: 45, autoStart: false }) });
+      assert.equal(response.status, 200);
+      response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: continuationHeaders,
+        body: JSON.stringify({ project: 'alpha', task: otherTask.id, title: continuationTask.title,
+          description: continuationTask.description, agent: 'hermes', timeoutMinutes: 45, autoStart: false }) });
+      assert.equal(response.status, 409);
+
+      const retryHeaders = { 'content-type': 'application/json', 'idempotency-key': 'column-retry-key' };
+      response = await fetch(`${base}/api/orchestrations/${retryTask.id}/retry`, { method: 'POST', headers: retryHeaders, body: '{}' });
+      assert.equal(response.status, 200);
+      response = await fetch(`${base}/api/orchestrations/${otherTask.id}/retry`, { method: 'POST', headers: retryHeaders, body: '{}' });
+      assert.equal(response.status, 409);
+      response = await fetch(`${base}/api/orchestrations/missing-task/retry`, { method: 'POST', headers: retryHeaders, body: '{}' });
       assert.equal(response.status, 409);
     });
   } finally { db.close(); }

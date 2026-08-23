@@ -304,6 +304,24 @@ test('SQLite continuation eligibility accepts only one distinct-key dispatch per
   } finally { db.close(); }
 });
 
+test('SQLite continuation accepts a retry after a prior claimed run reached a terminal status', async () => {
+  const db = makeDb();
+  const repo = new SqliteTaskRepository(db);
+  try {
+    await repo.create({ ...task('completed-card'), agentStatus: 'failed', runRequestedAt: 50, runClaimedAt: 51 });
+    const result = await repo.continueOrchestration(
+      'completed-card',
+      { agentStatus: 'idle', columnId: 'in-progress', runRequestedAt: 100, runClaimedAt: undefined },
+      { ...attempt('retry-after-terminal', 'completed-card', 'retry-after-terminal-key'), autoStart: true, status: 'dispatched' },
+      undefined,
+      1,
+      { requiredAgentStatus: 'failed', requireRunnable: true },
+    );
+    assert.equal(result?.created, true);
+    assert.equal((await repo.getById('completed-card'))?.runRequestedAt, 100);
+  } finally { db.close(); }
+});
+
 test('Postgres continuation locks by task and revalidates eligibility before update', async () => {
   const lockedTask = { ...task('pg-race'), agentStatus: 'idle' as const, runRequestedAt: 100 };
   const taskRow = {

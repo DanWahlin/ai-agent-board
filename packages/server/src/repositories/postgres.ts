@@ -445,7 +445,8 @@ export class PostgresTaskRepository implements TaskRepository {
         return undefined;
       }
       if (eligibility?.requireRunnable
-        && (current.runRequestedAt !== undefined || current.agentStatus === 'planning' || current.agentStatus === 'executing')) {
+        && ((current.runRequestedAt !== undefined && current.runClaimedAt === undefined)
+          || current.agentStatus === 'planning' || current.agentStatus === 'executing')) {
         await client.query('ROLLBACK');
         return undefined;
       }

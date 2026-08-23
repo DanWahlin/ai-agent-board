@@ -62,6 +62,8 @@ export interface ExecutionAttempt {
   relatedTaskId?: string;
   autoStart: boolean;
   timeoutMinutes?: number | null;
+  /** Canonical JSON of every material orchestration request field. */
+  requestSnapshot: string;
   status: 'pending' | 'dispatched';
   createdAt: number;
 }

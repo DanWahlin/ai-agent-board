@@ -199,11 +199,16 @@ function migrate(db: Database.Database): void {
       related_task_id TEXT,
       auto_start INTEGER NOT NULL,
       timeout_minutes INTEGER,
+      request_snapshot TEXT NOT NULL DEFAULT '{}',
       status TEXT NOT NULL CHECK (status IN ('pending', 'dispatched')),
       created_at INTEGER NOT NULL,
       UNIQUE (external_source, external_key)
     )
   `);
+  const attemptCols = db.pragma('table_info(execution_attempts)') as { name: string }[];
+  if (!attemptCols.some((column) => column.name === 'request_snapshot')) {
+    db.exec(`ALTER TABLE execution_attempts ADD COLUMN request_snapshot TEXT NOT NULL DEFAULT '{}'`);
+  }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_execution_attempts_task ON execution_attempts(task_id, created_at)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_column_id ON tasks(column_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_agent_status ON tasks(agent_status)`);
@@ -576,11 +581,13 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
       related_task_id TEXT,
       auto_start BOOLEAN NOT NULL,
       timeout_minutes INTEGER,
+      request_snapshot TEXT NOT NULL DEFAULT '{}',
       status TEXT NOT NULL CHECK (status IN ('pending', 'dispatched')),
       created_at BIGINT NOT NULL,
       UNIQUE (external_source, external_key)
     )
   `);
+  await pool.query(`ALTER TABLE execution_attempts ADD COLUMN IF NOT EXISTS request_snapshot TEXT NOT NULL DEFAULT '{}'`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_execution_attempts_task ON execution_attempts(task_id, created_at)`);
 
   await pool.query(`

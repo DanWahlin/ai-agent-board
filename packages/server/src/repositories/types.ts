@@ -1,5 +1,11 @@
 import type { Task, AgentEvent, TaskRelationship, ExecutionAttempt } from '../types.js';
 
+export interface OrchestrationAggregateResult {
+  task: Task;
+  attempt: ExecutionAttempt;
+  created: boolean;
+}
+
 export interface TaskRepository {
   getAll(includeArchived?: boolean, projectId?: string): Promise<Task[]>;
   getById(id: string): Promise<Task | undefined>;
@@ -26,4 +32,8 @@ export interface TaskRepository {
   getAttemptByExternalIdentity(source: string, key: string): Promise<ExecutionAttempt | undefined>;
   getAttemptsByTaskId(taskId: string): Promise<ExecutionAttempt[]>;
   createAttemptIdempotent(attempt: ExecutionAttempt): Promise<{ attempt: ExecutionAttempt; created: boolean }>;
+  /** Atomically persist a new task, its first attempt, and optional relationship. */
+  createOrchestration(task: Task, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt?: number): Promise<OrchestrationAggregateResult>;
+  /** Atomically persist an attempt, optional relationship, task reset, and run request. */
+  continueOrchestration(taskId: string, updates: Partial<Task>, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt?: number): Promise<OrchestrationAggregateResult | undefined>;
 }

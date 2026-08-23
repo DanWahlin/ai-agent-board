@@ -44,9 +44,29 @@ function sanitizeOrigin(value: unknown): Record<string, unknown> | undefined {
   }
   const nestedOrigin = input.origin;
   if (nestedOrigin && typeof nestedOrigin === 'object' && !Array.isArray(nestedOrigin)) {
-    output.origin = nestedOrigin;
+    const sanitized: Record<string, string | number | boolean | null> = {};
+    for (const key of Object.keys(nestedOrigin).sort().slice(0, 50)) {
+      const item = (nestedOrigin as Record<string, unknown>)[key];
+      if (typeof item === 'string') sanitized[key.slice(0, 100)] = item.slice(0, 500);
+      else if (typeof item === 'number' && Number.isFinite(item)) sanitized[key.slice(0, 100)] = item;
+      else if (typeof item === 'boolean' || item === null) sanitized[key.slice(0, 100)] = item as boolean | null;
+    }
+    if (Object.keys(sanitized).length) output.origin = sanitized;
   }
   return Object.keys(output).length ? output : undefined;
+}
+
+function canonicalJson(value: unknown): string {
+  const canonicalize = (item: unknown): unknown => {
+    if (Array.isArray(item)) return item.map(canonicalize);
+    if (item && typeof item === 'object') {
+      return Object.fromEntries(Object.keys(item as Record<string, unknown>).sort()
+        .filter((key) => (item as Record<string, unknown>)[key] !== undefined)
+        .map((key) => [key, canonicalize((item as Record<string, unknown>)[key])]));
+    }
+    return item;
+  };
+  return JSON.stringify(canonicalize(value));
 }
 
 function generateBranchName(key: string, title: string): string {
@@ -66,13 +86,15 @@ function taskLink(req: Request, projectId: string, taskId: string): string {
 }
 
 function attemptConflicts(actual: ExecutionAttempt, expected: ExecutionAttempt): boolean {
-  return actual.taskId !== expected.taskId
-    || actual.titleSnapshot !== expected.titleSnapshot
-    || actual.descriptionSnapshot !== expected.descriptionSnapshot
-    || actual.agentType !== expected.agentType
-    || actual.relatedTaskId !== expected.relatedTaskId
-    || actual.autoStart !== expected.autoStart
-    || actual.timeoutMinutes !== expected.timeoutMinutes;
+  return actual.requestSnapshot !== expected.requestSnapshot;
+}
+
+async function orchestrationTask(repo: TaskRepository, id: string): Promise<{ task: Task; attempts: ExecutionAttempt[] } | undefined> {
+  const addressedAttempt = await repo.getAttemptById(id);
+  const task = await repo.getById(addressedAttempt?.taskId ?? id);
+  if (!task) return undefined;
+  const attempts = await repo.getAttemptsByTaskId(task.id);
+  return attempts.length ? { task, attempts } : undefined;
 }
 
 async function resolveRelatedTask(repo: TaskRepository, projectId: string, reference: unknown, res: Response): Promise<Task | undefined> {
@@ -114,11 +136,12 @@ export function createOrchestrationsRouter(
   }));
 
   router.post('/:id/message', asyncHandler(async (req: Request, res: Response) => {
-    const task = await repo.getById(String(req.params.id));
-    if (!task || !task.externalSource) {
+    const orchestration = await orchestrationTask(repo, String(req.params.id));
+    if (!orchestration) {
       res.status(404).json({ error: 'orchestration not found' });
       return;
     }
+    const { task } = orchestration;
     if (typeof req.body.message !== 'string' || !req.body.message.trim()) {
       res.status(400).json({ error: 'message is required' });
       return;
@@ -132,9 +155,40 @@ export function createOrchestrationsRouter(
   }));
 
   router.post('/:id/retry', asyncHandler(async (req: Request, res: Response) => {
-    const task = await repo.getById(String(req.params.id));
-    if (!task || !task.externalSource) {
+    const orchestration = await orchestrationTask(repo, String(req.params.id));
+    if (!orchestration) {
       res.status(404).json({ error: 'orchestration not found' });
+      return;
+    }
+    const { task } = orchestration;
+    if (!isValidAgentType(task.agentType)) { res.status(409).json({ error: 'orchestration has no supported agent' }); return; }
+    const retryAgent = task.agentType;
+    const key = req.header('Idempotency-Key')?.trim();
+    if (!key) { res.status(400).json({ error: 'Idempotency-Key is required' }); return; }
+    if (key.length > 200) { res.status(400).json({ error: 'Idempotency-Key is too long' }); return; }
+    const timeoutMinutes = req.body.timeoutMinutes ?? req.body.timeout_minutes ?? task.timeoutMinutes;
+    if (timeoutMinutes !== undefined && !isValidAgentTimeoutMinutes(timeoutMinutes)) {
+      res.status(400).json({ error: `timeoutMinutes must be an integer between ${MIN_AGENT_TIMEOUT_MINUTES} and ${MAX_AGENT_TIMEOUT_MINUTES}` });
+      return;
+    }
+    const provenance = sanitizeOrigin(req.body.provenance ?? req.body.origin);
+    const expectedAttempt: ExecutionAttempt = {
+      id: randomUUID(), taskId: task.id, externalSource: 'hermes', externalKey: key,
+      titleSnapshot: task.title, descriptionSnapshot: task.description, agentType: retryAgent,
+      autoStart: true, timeoutMinutes, status: 'dispatched', createdAt: Date.now(),
+      requestSnapshot: canonicalJson({ kind: 'retry', projectId: task.projectId, taskId: task.id, title: task.title,
+        description: task.description, priority: task.priority, agent: retryAgent, baseBranch: task.baseBranch ?? null,
+        branchName: task.branchName ?? null, timeoutMinutes: timeoutMinutes ?? null, autoStart: true, relatedTaskId: null,
+        provenance: provenance ?? null }),
+    };
+    const replay = await repo.getAttemptByExternalIdentity('hermes', key);
+    if (replay) {
+      if (attemptConflicts(replay, expectedAttempt)) { res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' }); return; }
+      const replayTask = await repo.getById(replay.taskId);
+      if (!replayTask) { res.status(500).json({ error: 'retry attempt references a missing task' }); return; }
+      const deepLink = taskLink(req, replayTask.projectId, replayTask.id);
+      res.status(200).set('Idempotent-Replay', 'true').json({ task: replayTask, attempt: replay,
+        contract: { projectId: replayTask.projectId, taskId: replayTask.id, attemptId: replay.id, deepLink } });
       return;
     }
     if (agents.isRunning(task.id)) {
@@ -145,28 +199,32 @@ export function createOrchestrationsRouter(
       res.status(409).json({ error: 'only failed or timed-out orchestrations can be retried' });
       return;
     }
-    const timeoutMinutes = req.body.timeoutMinutes ?? req.body.timeout_minutes ?? task.timeoutMinutes;
-    if (timeoutMinutes !== undefined && !isValidAgentTimeoutMinutes(timeoutMinutes)) {
-      res.status(400).json({ error: `timeoutMinutes must be an integer between ${MIN_AGENT_TIMEOUT_MINUTES} and ${MAX_AGENT_TIMEOUT_MINUTES}` });
-      return;
-    }
-    const ready = agents.getAvailableAgents().find((agent) => agent.name === task.agentType);
+    const ready = agents.getAvailableAgents().find((agent) => agent.name === retryAgent);
     if (!ready?.available) {
-      res.status(409).json({ error: `agent ${task.agentType} is not ready`, reason: ready?.reason });
+      res.status(409).json({ error: `agent ${retryAgent} is not ready`, reason: ready?.reason });
       return;
     }
-    const reset = await repo.update(task.id, {
+    const result = await repo.continueOrchestration(task.id, {
       agentStatus: 'idle',
       columnId: 'in-progress',
       startedAt: undefined,
       completedAt: undefined,
       timeoutMinutes,
-    });
-    if (!reset) {
+      runRequestedAt: Date.now(),
+      runClaimedAt: undefined,
+    }, expectedAttempt);
+    if (!result) {
       res.status(500).json({ error: 'failed to reset orchestration' });
       return;
     }
-    await repo.requestRun(task.id, Date.now());
+    if (!result.created) {
+      if (attemptConflicts(result.attempt, expectedAttempt)) { res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' }); return; }
+      const deepLink = taskLink(req, result.task.projectId, result.task.id);
+      res.status(200).set('Idempotent-Replay', 'true').json({ task: result.task, attempt: result.attempt,
+        contract: { projectId: result.task.projectId, taskId: result.task.id, attemptId: result.attempt.id, deepLink } });
+      return;
+    }
+    const reset = result.task;
     broadcastTaskUpdate(reset);
     queueMicrotask(() => {
       void startAgentForTask(reset, repo, agents).catch((err) => {
@@ -174,7 +232,8 @@ export function createOrchestrationsRouter(
       });
     });
     const deepLink = taskLink(req, reset.projectId, reset.id);
-    res.status(202).json({ task: reset, contract: { projectId: reset.projectId, taskId: reset.id, deepLink } });
+    res.status(202).json({ task: reset, attempt: result.attempt,
+      contract: { projectId: reset.projectId, taskId: reset.id, attemptId: result.attempt.id, deepLink } });
   }));
 
   router.post('/', asyncHandler(async (req: Request, res: Response) => {
@@ -232,24 +291,45 @@ export function createOrchestrationsRouter(
       if (typeof continuationDescription === 'string' && continuationDescription.length > MAX_DESCRIPTION_LENGTH) {
         res.status(400).json({ error: `description must be at most ${MAX_DESCRIPTION_LENGTH} characters` }); return;
       }
+      const continuationTitle = req.body.title === undefined ? existing.title : (typeof req.body.title === 'string' ? req.body.title.trim() : '');
+      if (!continuationTitle || continuationTitle.length > MAX_TITLE_LENGTH) {
+        res.status(400).json({ error: `title must be a non-empty string at most ${MAX_TITLE_LENGTH} characters` }); return;
+      }
+      const priority = req.body.priority ?? existing.priority;
+      if (!isValidPriority(priority)) { res.status(400).json({ error: 'invalid priority' }); return; }
+      const baseBranch = req.body.baseBranch ?? existing.baseBranch;
+      const branchName = req.body.branchName ?? existing.branchName;
+      if (baseBranch !== undefined && (typeof baseBranch !== 'string' || !isValidGitRef(baseBranch))) {
+        res.status(400).json({ error: 'baseBranch is not a valid git ref' }); return;
+      }
+      if (branchName !== undefined && (typeof branchName !== 'string' || !isValidGitRef(branchName))) {
+        res.status(400).json({ error: 'branchName is not a valid git ref' }); return;
+      }
       const related = relatedReference === undefined ? undefined : await resolveRelatedTask(repo, project.id, relatedReference, res);
       if (relatedReference !== undefined && !related) return;
       if (related?.id === existing.id) { res.status(400).json({ error: 'a task cannot be related to itself' }); return; }
 
+      const provenance = sanitizeOrigin(req.body.provenance ?? req.body.origin);
       const expectedAttempt: ExecutionAttempt = {
         id: randomUUID(), taskId: existing.id, externalSource: 'hermes', externalKey: key,
-        titleSnapshot: existing.title, descriptionSnapshot: continuationDescription ?? existing.description,
+        titleSnapshot: continuationTitle, descriptionSnapshot: continuationDescription ?? existing.description,
         agentType: requestedAgent, relatedTaskId: related?.id, autoStart, timeoutMinutes,
         status: autoStart ? 'dispatched' : 'pending', createdAt: Date.now(),
+        requestSnapshot: canonicalJson({ kind: 'continuation', projectId: project.id, taskId: existing.id,
+          title: continuationTitle, description: continuationDescription ?? existing.description, priority, agent: requestedAgent,
+          baseBranch: baseBranch ?? null, branchName: branchName ?? null, timeoutMinutes: timeoutMinutes ?? null,
+          autoStart, relatedTaskId: related?.id ?? null, provenance: provenance ?? null }),
       };
       const replay = await repo.getAttemptByExternalIdentity('hermes', key);
       if (replay) {
         if (attemptConflicts(replay, expectedAttempt)) {
           res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' }); return;
         }
-        const deepLink = taskLink(req, existing.projectId, existing.id);
-        res.status(200).set('Idempotent-Replay', 'true').json({ task: existing, attempt: replay, continuation: true,
-          contract: { projectId: existing.projectId, taskId: existing.id, attemptId: replay.id, deepLink } });
+        const replayTask = await repo.getById(replay.taskId);
+        if (!replayTask) { res.status(500).json({ error: 'execution attempt references a missing task' }); return; }
+        const deepLink = taskLink(req, replayTask.projectId, replayTask.id);
+        res.status(200).set('Idempotent-Replay', 'true').json({ task: replayTask, attempt: replay, continuation: true,
+          contract: { projectId: replayTask.projectId, taskId: replayTask.id, attemptId: replay.id, deepLink } });
         return;
       }
       if (agents.isRunning(existing.id)) {
@@ -259,31 +339,31 @@ export function createOrchestrationsRouter(
         const ready = agents.getAvailableAgents().find((agent) => agent.name === requestedAgent);
         if (!ready?.available) { res.status(409).json({ error: `agent ${requestedAgent} is not ready`, reason: ready?.reason }); return; }
       }
-      const attemptResult = await repo.createAttemptIdempotent(expectedAttempt);
-      if (!attemptResult.created) {
-        if (attemptConflicts(attemptResult.attempt, expectedAttempt)) {
+      const aggregate = await repo.continueOrchestration(existing.id, {
+        agentType: requestedAgent, title: continuationTitle, description: continuationDescription ?? existing.description,
+        priority, baseBranch, branchName,
+        agentStatus: 'idle', columnId: autoStart ? 'in-progress' : 'backlog', archived: false,
+        startedAt: undefined, completedAt: undefined, runRequestedAt: autoStart ? Date.now() : undefined,
+        runClaimedAt: undefined, timeoutMinutes,
+      }, expectedAttempt, related?.id, Date.now());
+      if (!aggregate) { res.status(500).json({ error: 'failed to continue task' }); return; }
+      if (!aggregate.created) {
+        if (attemptConflicts(aggregate.attempt, expectedAttempt)) {
           res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' }); return;
         }
-        const deepLink = taskLink(req, existing.projectId, existing.id);
-        res.status(200).set('Idempotent-Replay', 'true').json({ task: existing, attempt: attemptResult.attempt, continuation: true,
-          contract: { projectId: existing.projectId, taskId: existing.id, attemptId: attemptResult.attempt.id, deepLink } });
+        const deepLink = taskLink(req, aggregate.task.projectId, aggregate.task.id);
+        res.status(200).set('Idempotent-Replay', 'true').json({ task: aggregate.task, attempt: aggregate.attempt, continuation: true,
+          contract: { projectId: aggregate.task.projectId, taskId: aggregate.task.id, attemptId: aggregate.attempt.id, deepLink } });
         return;
       }
-      if (related) await repo.createRelationship(existing.id, related.id, Date.now());
-      const reset = await repo.update(existing.id, {
-        agentType: requestedAgent, description: continuationDescription ?? existing.description,
-        agentStatus: 'idle', columnId: autoStart ? 'in-progress' : 'backlog', archived: false,
-        startedAt: undefined, completedAt: undefined, runRequestedAt: undefined, runClaimedAt: undefined, timeoutMinutes,
-      });
-      if (!reset) { res.status(500).json({ error: 'failed to continue task' }); return; }
-      if (autoStart) await repo.requestRun(reset.id, Date.now());
+      const reset = aggregate.task;
       broadcastTaskUpdate(reset);
       if (autoStart) queueMicrotask(() => {
         void startAgentForTask(reset, repo, agents).catch((err) => console.error(`[orchestrations] failed to continue task ${reset.id}:`, err));
       });
       const deepLink = taskLink(req, reset.projectId, reset.id);
-      res.status(202).json({ task: reset, attempt: attemptResult.attempt, continuation: true,
-        contract: { projectId: reset.projectId, taskId: reset.id, attemptId: attemptResult.attempt.id, deepLink } });
+      res.status(202).json({ task: reset, attempt: aggregate.attempt, continuation: true,
+        contract: { projectId: reset.projectId, taskId: reset.id, attemptId: aggregate.attempt.id, deepLink } });
       return;
     }
 
@@ -367,65 +447,59 @@ export function createOrchestrationsRouter(
       : await resolveRelatedTask(repo, project.id, relatedReference, res);
     if (relatedReference !== undefined && !relatedTask) return;
 
+    const priority = req.body.priority ?? project.defaultPriority ?? 'medium';
+    const provenance = sanitizeOrigin(req.body.provenance ?? req.body.origin);
     const task = buildTask({
       title,
       description,
       projectId: project.id,
       repoPath: project.repoPath,
       agentType,
-      priority: req.body.priority ?? project.defaultPriority,
+      priority,
       columnId: autoStart ? 'in-progress' : 'backlog',
       baseBranch,
       branchName,
       useWorktree: true,
       externalSource: 'hermes',
       externalKey: key,
-      provenance: sanitizeOrigin(req.body.provenance ?? req.body.origin),
+      provenance,
       runRequestedAt: autoStart ? Date.now() : undefined,
       timeoutMinutes,
     });
 
-    const result = await repo.createIdempotent(task);
-    const deepLink = taskLink(req, result.task.projectId, result.task.id);
     const expectedAttempt: ExecutionAttempt = {
-      id: randomUUID(), taskId: result.task.id, externalSource: 'hermes', externalKey: key,
+      id: randomUUID(), taskId: task.id, externalSource: 'hermes', externalKey: key,
       titleSnapshot: title, descriptionSnapshot: description, agentType, relatedTaskId: relatedTask?.id,
       autoStart, timeoutMinutes, status: autoStart ? 'dispatched' : 'pending', createdAt: Date.now(),
+      requestSnapshot: canonicalJson({ kind: 'create', projectId: project.id, taskId: null, title, description, priority,
+        agent: agentType, baseBranch, branchName, timeoutMinutes: timeoutMinutes ?? null, autoStart,
+        relatedTaskId: relatedTask?.id ?? null, provenance: provenance ?? null }),
     };
-    const attemptResult = await repo.createAttemptIdempotent(expectedAttempt);
-    if (!result.created || !attemptResult.created) {
-      const conflicts = result.task.projectId !== task.projectId
-        || result.task.agentType !== task.agentType
-        || result.task.title !== task.title
-        || result.task.description !== task.description
-        || result.task.branchName !== task.branchName
-        || result.task.baseBranch !== task.baseBranch
-        || result.task.timeoutMinutes !== task.timeoutMinutes
-        || attemptConflicts(attemptResult.attempt, expectedAttempt);
-      if (conflicts) {
+    const aggregate = await repo.createOrchestration(task, expectedAttempt, relatedTask?.id, Date.now());
+    const deepLink = taskLink(req, aggregate.task.projectId, aggregate.task.id);
+    if (!aggregate.created) {
+      if (attemptConflicts(aggregate.attempt, expectedAttempt)) {
         res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' });
         return;
       }
       res.status(200).set('Idempotent-Replay', 'true').json({
-        task: result.task, attempt: attemptResult.attempt,
-        contract: { projectId: result.task.projectId, taskId: result.task.id, attemptId: attemptResult.attempt.id, deepLink },
+        task: aggregate.task, attempt: aggregate.attempt,
+        contract: { projectId: aggregate.task.projectId, taskId: aggregate.task.id, attemptId: aggregate.attempt.id, deepLink },
       });
       return;
     }
 
-    if (relatedTask) await repo.createRelationship(task.id, relatedTask.id, Date.now());
-    broadcastTaskUpdate(task);
+    broadcastTaskUpdate(aggregate.task);
     if (autoStart) {
       queueMicrotask(() => {
-        void startAgentForTask(task, repo, agents).catch((err) => {
-          console.error(`[orchestrations] failed to dispatch task ${task.id}:`, err);
+        void startAgentForTask(aggregate.task, repo, agents).catch((err) => {
+          console.error(`[orchestrations] failed to dispatch task ${aggregate.task.id}:`, err);
         });
       });
     }
-    const current = await repo.getById(task.id) || task;
     res.status(201).json({
-      task: current, attempt: attemptResult.attempt,
-      contract: { projectId: project.id, taskId: task.id, attemptId: attemptResult.attempt.id, deepLink },
+      task: aggregate.task, attempt: aggregate.attempt,
+      contract: { projectId: project.id, taskId: aggregate.task.id, attemptId: aggregate.attempt.id, deepLink },
     });
   }));
 

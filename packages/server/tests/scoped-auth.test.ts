@@ -12,5 +12,7 @@ test('relationship mutations require the dedicated service scope', async()=>{
   const request=(path:string,method:string)=>({path,method}) as Request;
   assert.equal(requiredScope(request('/tasks/a/relationships','POST')),'tasks:relationships');
   assert.equal(requiredScope(request('/tasks/a/relationships/b','DELETE')),'tasks:relationships');
+  assert.equal(requiredScope(request('/tasks/a/relationships/','POST')),'tasks:relationships');
+  assert.equal(requiredScope(request('/tasks/a/relationships/b/','DELETE')),'tasks:relationships');
   assert.equal(requiredScope(request('/tasks/a/relationships','GET')),undefined);
 });

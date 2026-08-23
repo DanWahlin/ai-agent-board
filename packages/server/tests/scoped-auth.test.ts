@@ -69,6 +69,7 @@ test('middleware enforces exact service scopes while preserving tokenless browse
       assert.equal((await fetch(`${base}/projects`)).status, 200);
       assert.equal((await fetch(`${base}/agents`)).status, 200);
       assert.equal((await fetch(`${base}/tasks/t/relationships`)).status, 200);
+      assert.equal((await fetch(`${base}/orchestrations/task-id`)).status, 401);
 
       assert.equal((await fetch(`${base}/projects`, { headers: bearer('projects-token') })).status, 200);
       assert.equal((await fetch(`${base}/projects/exact-id`, { headers: bearer('projects-token') })).status, 200);

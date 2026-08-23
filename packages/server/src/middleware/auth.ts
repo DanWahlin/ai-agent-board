@@ -70,6 +70,12 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
   if (serviceCredentials.length === 0) { next(); return; }
   const isRead = req.method === 'GET' || req.method === 'HEAD';
   if (!token) {
+    // The orchestration facade is service-only even when ordinary Board reads
+    // remain available to the browser behind an outer identity boundary.
+    if (scope === 'orchestrations:read') {
+      res.status(401).json({ error: 'unauthorized' });
+      return;
+    }
     if (!scope || isRead) { next(); return; }
     res.status(401).json({ error: 'unauthorized' });
     return;

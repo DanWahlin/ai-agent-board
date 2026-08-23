@@ -349,6 +349,17 @@ export class PostgresTaskRepository implements TaskRepository {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      const replayResult = await client.query<AttemptRow>(
+        'SELECT * FROM execution_attempts WHERE external_source=$1 AND external_key=$2 FOR UPDATE',
+        [attempt.externalSource, attempt.externalKey],
+      );
+      if (replayResult.rows[0]) {
+        const replay = rowToAttempt(replayResult.rows[0]);
+        const replayTaskResult = await client.query<TaskRow>('SELECT * FROM tasks WHERE id=$1', [replay.taskId]);
+        if (!replayTaskResult.rows[0]) throw new Error('execution attempt references a missing task');
+        await client.query('COMMIT');
+        return { task: rowToTask(replayTaskResult.rows[0]), attempt: replay, created: false };
+      }
       const taskInsert = await client.query<TaskRow>(`INSERT INTO tasks (id,project_id,title,description,priority,column_id,agent_status,agent_type,
         created_at,started_at,completed_at,repo_path,branch_name,base_branch,use_worktree,worktree_path,archived,group_id,group_order,summary,
         external_source,external_key,provenance,run_requested_at,run_claimed_at,timeout_minutes)

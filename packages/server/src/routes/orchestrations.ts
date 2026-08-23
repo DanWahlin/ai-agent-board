@@ -34,6 +34,8 @@ function sanitizeOrigin(value: unknown): Record<string, unknown> | undefined {
     ['sessionId', 'sourceSession'],
     ['sourceMessage', 'sourceMessage'],
     ['messageId', 'sourceMessage'],
+    ['sourceTask', 'sourceTask'],
+    ['hermesTaskId', 'sourceTask'],
     ['requestedBy', 'requestedBy'],
   ];
   for (const [inputKey, outputKey] of mappings) {

@@ -60,3 +60,34 @@ test('PostgreSQL migration uses an idempotent deterministic execution-attempt ba
   assert.match(backfill, /json_build_object/);
   assert.match(backfill, /CASE WHEN t\.run_requested_at IS NOT NULL THEN 'dispatched' ELSE 'pending' END/);
 });
+
+test('PostgreSQL migration tolerates only a verified duplicate-constraint startup race', async () => {
+  const checks = new Map<string, number>();
+  const pool = {
+    query: async (sql: string) => {
+      for (const name of ['tasks_project_id_fkey', 'task_groups_project_id_fkey']) {
+        if (sql.includes('ADD CONSTRAINT ' + name)) {
+          throw Object.assign(new Error('duplicate constraint'), { code: '42710' });
+        }
+        if (sql.includes('information_schema.table_constraints') && sql.includes(name)) {
+          const count = (checks.get(name) ?? 0) + 1;
+          checks.set(name, count);
+          return { rows: count === 1 ? [] : [{ constraint_name: name }], rowCount: count === 1 ? 0 : 1 };
+        }
+      }
+      return { rows: [], rowCount: 0 };
+    },
+  };
+  await initPostgresDatabase(pool as never);
+  assert.deepEqual([...checks.values()], [2, 2]);
+});
+
+test('PostgreSQL migration fails closed when a project foreign key cannot be installed', async () => {
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes('ADD CONSTRAINT tasks_project_id_fkey')) throw new Error('foreign key blocked');
+      return { rows: [], rowCount: 0 };
+    },
+  };
+  await assert.rejects(initPostgresDatabase(pool as never), /foreign key blocked/);
+});

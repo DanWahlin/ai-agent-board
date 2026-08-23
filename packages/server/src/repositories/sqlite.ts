@@ -359,7 +359,7 @@ export class SqliteTaskRepository implements TaskRepository {
       if (inserted.changes !== 1) throw new Error('failed to persist execution attempt');
       if (relatedTaskId) this.insertRelationship(task.id, relatedTaskId, relationshipCreatedAt);
       return { task, attempt: persistedAttempt, created: true };
-    })();
+    }).immediate();
   }
 
   async continueOrchestration(taskId: string, updates: Partial<Task>, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt = Date.now(), eligibility?: ContinuationEligibility) {

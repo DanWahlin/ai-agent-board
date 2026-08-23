@@ -61,11 +61,11 @@ const agents = {
   startAgent: () => undefined,
 } as unknown as AgentManager;
 
-async function withApi(repo: SqliteTaskRepository, run: (base: string) => Promise<void>, manager: AgentManager = agents) {
+async function withApi(repo: SqliteTaskRepository, run: (base: string) => Promise<void>, manager: AgentManager = agents, projectRepo: ProjectRepository = projects) {
   const app = express();
   app.use(express.json());
-  app.use('/api/tasks', createTaskRouter(repo, manager, projects));
-  app.use('/api/orchestrations', createOrchestrationsRouter(repo, projects, manager));
+  app.use('/api/tasks', createTaskRouter(repo, manager, projectRepo));
+  app.use('/api/orchestrations', createOrchestrationsRouter(repo, projectRepo, manager));
   const server = createServer(app);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -247,6 +247,8 @@ test('retry requires idempotency, creates one attempt, and never redispatches a 
       assert.equal(dispatches, 1);
       assert.equal((await repo.getAttemptsByTaskId('retry-card')).length, 2);
 
+      await repo.update('retry-card', { title: 'Retry card renamed', description: 'mutated', priority: 'high',
+        agentType: 'codex', baseBranch: 'develop', branchName: 'agent/mutated', timeoutMinutes: 120 });
       response = await fetch(`${base}/api/orchestrations/retry-card/retry`, { method: 'POST', headers: retryHeaders, body: JSON.stringify({ provenance: { sourceSession: 'one' } }) });
       assert.equal(response.status, 200);
       assert.equal(response.headers.get('idempotent-replay'), 'true');
@@ -294,6 +296,73 @@ test('request snapshots reject create and continuation replays with changed prio
         assert.equal(response.status, 409, key);
       }
     });
+  } finally { db.close(); }
+});
+
+test('persisted request identity authoritatively replays after task and project mutation', async () => {
+  const db = makeDb();
+  const repo = new SqliteTaskRepository(db);
+  let projectAvailable = true;
+  const mutableProjects = {
+    getById: async (id: string) => projectAvailable && id === project.id ? project : undefined,
+    resolve: async (ref: string) => projectAvailable && ref === 'old-project-alias' ? [project] : [],
+  } as ProjectRepository;
+  try {
+    await repo.create({ ...task('mutable-card', 'project-a', 'Old title'), description: 'old default', priority: 'medium' });
+    await withApi(repo, async (base) => {
+      const headers = { 'content-type': 'application/json', 'idempotency-key': 'durable-continuation' };
+      const original = { project: 'old-project-alias', task: 'Old title', autoStart: false };
+      let response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers, body: JSON.stringify(original) });
+      assert.equal(response.status, 202);
+      const first = await response.json() as { attempt: ExecutionAttempt };
+
+      await repo.update('mutable-card', { title: 'Renamed', description: 'changed default', priority: 'high', agentType: 'codex', baseBranch: 'develop' });
+      projectAvailable = false;
+      response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers, body: JSON.stringify(original) });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('idempotent-replay'), 'true');
+      assert.equal((await response.json() as { attempt: ExecutionAttempt }).attempt.id, first.attempt.id);
+
+      response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers,
+        body: JSON.stringify({ ...original, description: 'materially different' }) });
+      assert.equal(response.status, 409);
+    }, agents, mutableProjects);
+  } finally { db.close(); }
+});
+
+test('queued continuation cannot overwrite durable active execution state', async () => {
+  const db = makeDb();
+  const repo = new SqliteTaskRepository(db);
+  try {
+    const active = { ...task('active-card', 'project-a', 'Active card'), agentStatus: 'executing' as const,
+      columnId: 'in-progress' as const, runRequestedAt: 10, runClaimedAt: 11, startedAt: 12 };
+    await repo.create(active);
+    await withApi(repo, async (base) => {
+      const response = await fetch(`${base}/api/orchestrations`, { method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': 'queued-active-race' },
+        body: JSON.stringify({ project: 'alpha', task: 'active-card', title: 'Must not replace', autoStart: false }) });
+      assert.equal(response.status, 409);
+      const persisted = await repo.getById(active.id);
+      assert.deepEqual({ title: persisted?.title, status: persisted?.agentStatus, requested: persisted?.runRequestedAt, claimed: persisted?.runClaimedAt },
+        { title: active.title, status: active.agentStatus, requested: active.runRequestedAt, claimed: active.runClaimedAt });
+      assert.equal(await repo.getAttemptByExternalIdentity('hermes', 'queued-active-race'), undefined);
+    });
+  } finally { db.close(); }
+});
+
+test('SQLite locked continuation rejects a claimed idle execution', async () => {
+  const db = makeDb();
+  const repo = new SqliteTaskRepository(db);
+  try {
+    const active = { ...task('claimed-idle'), runRequestedAt: 10, runClaimedAt: 11 };
+    await repo.create(active);
+    const result = await repo.continueOrchestration(active.id, { title: 'overwritten', runRequestedAt: undefined, runClaimedAt: undefined },
+      attempt('claimed-idle-attempt', active.id), undefined, 1, { requireRunnable: true });
+    assert.equal(result, undefined);
+    const persisted = await repo.getById(active.id);
+    assert.deepEqual({ title: persisted?.title, status: persisted?.agentStatus, requested: persisted?.runRequestedAt, claimed: persisted?.runClaimedAt },
+      { title: active.title, status: active.agentStatus, requested: active.runRequestedAt, claimed: active.runClaimedAt });
+    assert.equal(await repo.getAttemptById('claimed-idle-attempt'), undefined);
   } finally { db.close(); }
 });
 
@@ -362,7 +431,7 @@ test('Postgres continuation locks by task and revalidates eligibility before upd
     agent_type: lockedTask.agentType, created_at: String(lockedTask.createdAt), started_at: null, completed_at: null,
     repo_path: lockedTask.repoPath, branch_name: lockedTask.branchName, base_branch: lockedTask.baseBranch,
     use_worktree: true, worktree_path: null, archived: false, group_id: null, group_order: null, summary: null,
-    external_source: null, external_key: null, provenance: null, run_requested_at: '100', run_claimed_at: null, timeout_minutes: null,
+    external_source: null, external_key: null, provenance: null, run_requested_at: '100', run_claimed_at: '101', timeout_minutes: null,
   };
   const proposed = { ...attempt('pg-race-attempt', lockedTask.id, 'pg-race-key'), autoStart: true, status: 'dispatched' as const };
   const attemptRow = {

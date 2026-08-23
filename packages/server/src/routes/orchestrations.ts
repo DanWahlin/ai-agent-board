@@ -91,6 +91,70 @@ function attemptConflicts(actual: ExecutionAttempt, expected: ExecutionAttempt):
   return actual.requestSnapshot !== expected.requestSnapshot;
 }
 
+type RequestIdentity = Record<string, unknown>;
+
+function firstDefined(body: Record<string, unknown>, keys: string[]): unknown {
+  for (const key of keys) if (body[key] !== undefined) return body[key];
+  return undefined;
+}
+
+function orchestrationRequestIdentity(body: Record<string, unknown>): RequestIdentity {
+  const taskReference = firstDefined(body, ['task', 'taskId', 'item', 'itemId', 'continueTask', 'continueTaskId']);
+  const identity: RequestIdentity = {
+    kind: taskReference === undefined ? 'create' : 'continuation',
+    project: body.project,
+    task: taskReference,
+    relatedTask: firstDefined(body, ['relatedItem', 'relatedTask', 'relatedTaskId']),
+    title: body.title,
+    description: body.description,
+    agent: firstDefined(body, ['agentType', 'agent']),
+    priority: body.priority,
+    baseBranch: body.baseBranch,
+    branchName: body.branchName,
+    timeoutMinutes: firstDefined(body, ['timeoutMinutes', 'timeout_minutes']),
+    autoStart: firstDefined(body, ['autoStart', 'auto_start']) ?? true,
+    provenance: sanitizeOrigin(body.provenance ?? body.origin) ?? null,
+  };
+  if (taskReference === undefined) {
+    identity.useWorktree = body.useWorktree;
+    identity.isolation = body.isolation;
+  }
+  return identity;
+}
+
+function retryRequestIdentity(target: string, body: Record<string, unknown>): RequestIdentity {
+  return {
+    kind: 'retry', target,
+    timeoutMinutes: firstDefined(body, ['timeoutMinutes', 'timeout_minutes']),
+    provenance: sanitizeOrigin(body.provenance ?? body.origin) ?? null,
+  };
+}
+
+function conflictsWithRequest(actual: ExecutionAttempt, identity: RequestIdentity, fallback?: ExecutionAttempt): boolean {
+  try {
+    const snapshot = JSON.parse(actual.requestSnapshot) as Record<string, unknown>;
+    if (snapshot.request && typeof snapshot.request === 'object' && !Array.isArray(snapshot.request)) {
+      return canonicalJson(snapshot.request) !== canonicalJson(identity);
+    }
+  } catch {
+    // Legacy snapshots are compared after normal resolution below.
+  }
+  return fallback ? attemptConflicts(actual, fallback) : false;
+}
+
+function hasStoredRequestIdentity(attempt: ExecutionAttempt): boolean {
+  try {
+    const snapshot = JSON.parse(attempt.requestSnapshot) as Record<string, unknown>;
+    return !!snapshot.request && typeof snapshot.request === 'object' && !Array.isArray(snapshot.request);
+  } catch { return false; }
+}
+
+function replayResponse(req: Request, res: Response, task: Task, attempt: ExecutionAttempt, continuation = false): void {
+  const deepLink = taskLink(req, task.projectId, task.id);
+  res.status(200).set('Idempotent-Replay', 'true').json({ task, attempt, ...(continuation ? { continuation: true } : {}),
+    contract: { projectId: task.projectId, taskId: task.id, attemptId: attempt.id, deepLink } });
+}
+
 async function orchestrationTask(repo: TaskRepository, id: string): Promise<{ task: Task; attempts: ExecutionAttempt[] } | undefined> {
   const addressedAttempt = await repo.getAttemptById(id);
   const task = await repo.getById(addressedAttempt?.taskId ?? id);
@@ -157,6 +221,20 @@ export function createOrchestrationsRouter(
   }));
 
   router.post('/:id/retry', asyncHandler(async (req: Request, res: Response) => {
+    const key = req.header('Idempotency-Key')?.trim();
+    if (!key) { res.status(400).json({ error: 'Idempotency-Key is required' }); return; }
+    if (key.length > 200) { res.status(400).json({ error: 'Idempotency-Key is too long' }); return; }
+    const requestIdentity = retryRequestIdentity(String(req.params.id), req.body);
+    const earlyReplay = await repo.getAttemptByExternalIdentity('hermes', key);
+    if (earlyReplay && hasStoredRequestIdentity(earlyReplay)) {
+      if (conflictsWithRequest(earlyReplay, requestIdentity)) {
+        res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' }); return;
+      }
+      const replayTask = await repo.getById(earlyReplay.taskId);
+      if (!replayTask) { res.status(500).json({ error: 'retry attempt references a missing task' }); return; }
+      replayResponse(req, res, replayTask, earlyReplay);
+      return;
+    }
     const orchestration = await orchestrationTask(repo, String(req.params.id));
     if (!orchestration) {
       res.status(404).json({ error: 'orchestration not found' });
@@ -165,9 +243,6 @@ export function createOrchestrationsRouter(
     const { task } = orchestration;
     if (!isValidAgentType(task.agentType)) { res.status(409).json({ error: 'orchestration has no supported agent' }); return; }
     const retryAgent = task.agentType;
-    const key = req.header('Idempotency-Key')?.trim();
-    if (!key) { res.status(400).json({ error: 'Idempotency-Key is required' }); return; }
-    if (key.length > 200) { res.status(400).json({ error: 'Idempotency-Key is too long' }); return; }
     const timeoutMinutes = req.body.timeoutMinutes ?? req.body.timeout_minutes ?? task.timeoutMinutes;
     if (timeoutMinutes !== undefined && !isValidAgentTimeoutMinutes(timeoutMinutes)) {
       res.status(400).json({ error: `timeoutMinutes must be an integer between ${MIN_AGENT_TIMEOUT_MINUTES} and ${MAX_AGENT_TIMEOUT_MINUTES}` });
@@ -178,14 +253,14 @@ export function createOrchestrationsRouter(
       id: randomUUID(), taskId: task.id, externalSource: 'hermes', externalKey: key,
       titleSnapshot: task.title, descriptionSnapshot: task.description, agentType: retryAgent,
       autoStart: true, timeoutMinutes, status: 'dispatched', createdAt: Date.now(),
-      requestSnapshot: canonicalJson({ kind: 'retry', projectId: task.projectId, taskId: task.id, title: task.title,
+      requestSnapshot: canonicalJson({ kind: 'retry', request: requestIdentity, projectId: task.projectId, taskId: task.id, title: task.title,
         description: task.description, priority: task.priority, agent: retryAgent, baseBranch: task.baseBranch ?? null,
         branchName: task.branchName ?? null, timeoutMinutes: timeoutMinutes ?? null, autoStart: true, relatedTaskId: null,
         provenance: provenance ?? null }),
     };
     const replay = await repo.getAttemptByExternalIdentity('hermes', key);
     if (replay) {
-      if (attemptConflicts(replay, expectedAttempt)) { res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' }); return; }
+      if (conflictsWithRequest(replay, requestIdentity, expectedAttempt)) { res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' }); return; }
       const replayTask = await repo.getById(replay.taskId);
       if (!replayTask) { res.status(500).json({ error: 'retry attempt references a missing task' }); return; }
       const deepLink = taskLink(req, replayTask.projectId, replayTask.id);
@@ -220,7 +295,7 @@ export function createOrchestrationsRouter(
       return;
     }
     if (!result.created) {
-      if (attemptConflicts(result.attempt, expectedAttempt)) { res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' }); return; }
+      if (conflictsWithRequest(result.attempt, requestIdentity, expectedAttempt)) { res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' }); return; }
       const deepLink = taskLink(req, result.task.projectId, result.task.id);
       res.status(200).set('Idempotent-Replay', 'true').json({ task: result.task, attempt: result.attempt,
         contract: { projectId: result.task.projectId, taskId: result.task.id, attemptId: result.attempt.id, deepLink } });
@@ -239,6 +314,22 @@ export function createOrchestrationsRouter(
   }));
 
   router.post('/', asyncHandler(async (req: Request, res: Response) => {
+    const suppliedKey = (req.header('Idempotency-Key') || req.body.externalKey)?.trim();
+    const requestIdentity = orchestrationRequestIdentity(req.body);
+    if (suppliedKey && suppliedKey.length <= 200) {
+      const earlyReplay = await repo.getAttemptByExternalIdentity('hermes', suppliedKey);
+      if (earlyReplay && hasStoredRequestIdentity(earlyReplay)) {
+        if (conflictsWithRequest(earlyReplay, requestIdentity)) {
+          res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' }); return;
+        }
+        const replayTask = await repo.getById(earlyReplay.taskId);
+        if (!replayTask) { res.status(500).json({ error: 'execution attempt references a missing task' }); return; }
+        let continuation = false;
+        try { continuation = JSON.parse(earlyReplay.requestSnapshot).request?.kind === 'continuation'; } catch { /* legacy */ }
+        replayResponse(req, res, replayTask, earlyReplay, continuation);
+        return;
+      }
+    }
     const projectReference = req.body.project;
     if (typeof projectReference !== 'string' || !projectReference.trim()) {
       res.status(400).json({ error: 'project is required (id, name, or alias)' });
@@ -317,14 +408,14 @@ export function createOrchestrationsRouter(
         titleSnapshot: continuationTitle, descriptionSnapshot: continuationDescription ?? existing.description,
         agentType: requestedAgent, relatedTaskId: related?.id, autoStart, timeoutMinutes,
         status: autoStart ? 'dispatched' : 'pending', createdAt: Date.now(),
-        requestSnapshot: canonicalJson({ kind: 'continuation', projectId: project.id, taskId: existing.id,
+        requestSnapshot: canonicalJson({ kind: 'continuation', request: requestIdentity, projectId: project.id, taskId: existing.id,
           title: continuationTitle, description: continuationDescription ?? existing.description, priority, agent: requestedAgent,
           baseBranch: baseBranch ?? null, branchName: branchName ?? null, timeoutMinutes: timeoutMinutes ?? null,
           autoStart, relatedTaskId: related?.id ?? null, provenance: provenance ?? null }),
       };
       const replay = await repo.getAttemptByExternalIdentity('hermes', key);
       if (replay) {
-        if (attemptConflicts(replay, expectedAttempt)) {
+        if (conflictsWithRequest(replay, requestIdentity, expectedAttempt)) {
           res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' }); return;
         }
         const replayTask = await repo.getById(replay.taskId);
@@ -347,10 +438,10 @@ export function createOrchestrationsRouter(
         agentStatus: 'idle', columnId: autoStart ? 'in-progress' : 'backlog', archived: false,
         startedAt: undefined, completedAt: undefined, runRequestedAt: autoStart ? Date.now() : undefined,
         runClaimedAt: undefined, timeoutMinutes,
-      }, expectedAttempt, related?.id, Date.now(), autoStart ? { requireRunnable: true } : undefined);
+      }, expectedAttempt, related?.id, Date.now(), { requireRunnable: true });
       if (!aggregate) { res.status(409).json({ error: 'task is no longer eligible to start' }); return; }
       if (!aggregate.created) {
-        if (attemptConflicts(aggregate.attempt, expectedAttempt)) {
+        if (conflictsWithRequest(aggregate.attempt, requestIdentity, expectedAttempt)) {
           res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' }); return;
         }
         const deepLink = taskLink(req, aggregate.task.projectId, aggregate.task.id);
@@ -462,13 +553,13 @@ export function createOrchestrationsRouter(
       id: randomUUID(), taskId: task.id, externalSource: 'hermes', externalKey: key,
       titleSnapshot: title, descriptionSnapshot: description, agentType, relatedTaskId: relatedTask?.id,
       autoStart, timeoutMinutes, status: autoStart ? 'dispatched' : 'pending', createdAt: Date.now(),
-      requestSnapshot: canonicalJson({ kind: 'create', projectId: project.id, taskId: null, title, description, priority,
+      requestSnapshot: canonicalJson({ kind: 'create', request: requestIdentity, projectId: project.id, taskId: null, title, description, priority,
         agent: agentType, baseBranch, branchName, timeoutMinutes: timeoutMinutes ?? null, autoStart,
         relatedTaskId: relatedTask?.id ?? null, provenance: provenance ?? null }),
     };
     const replay = await repo.getAttemptByExternalIdentity('hermes', key);
     if (replay) {
-      if (attemptConflicts(replay, expectedAttempt)) {
+      if (conflictsWithRequest(replay, requestIdentity, expectedAttempt)) {
         res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' });
         return;
       }
@@ -498,7 +589,7 @@ export function createOrchestrationsRouter(
     const aggregate = await repo.createOrchestration(task, expectedAttempt, relatedTask?.id, Date.now());
     const deepLink = taskLink(req, aggregate.task.projectId, aggregate.task.id);
     if (!aggregate.created) {
-      if (attemptConflicts(aggregate.attempt, expectedAttempt)) {
+      if (conflictsWithRequest(aggregate.attempt, requestIdentity, expectedAttempt)) {
         res.status(409).json({ error: 'idempotency key was already used for a different orchestration request' });
         return;
       }

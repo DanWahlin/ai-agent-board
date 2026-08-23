@@ -379,7 +379,7 @@ export class SqliteTaskRepository implements TaskRepository {
       const current = rowToTask(taskRow);
       if (eligibility?.requiredAgentStatus && current.agentStatus !== eligibility.requiredAgentStatus) return undefined;
       if (eligibility?.requireRunnable
-        && ((current.runRequestedAt !== undefined && current.runClaimedAt === undefined)
+        && ((current.runRequestedAt !== undefined && (current.runClaimedAt === undefined || current.agentStatus === 'idle'))
           || current.agentStatus === 'planning' || current.agentStatus === 'executing')) return undefined;
       const persistedAttempt = { ...attempt, taskId };
       this.db.prepare(`INSERT INTO execution_attempts

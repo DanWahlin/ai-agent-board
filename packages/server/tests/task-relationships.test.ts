@@ -365,23 +365,34 @@ test('legacy snapshots without request replay create, continuation, and retry wh
     await withApi(repo, async (base) => {
       let response = await fetch(`${base}/api/orchestrations`, { method: 'POST',
         headers: { 'content-type': 'application/json', 'idempotency-key': 'legacy-create-key' },
-        body: JSON.stringify({ project: 'alpha', agent: 'hermes', title: 'Original create', autoStart: false }) });
+        body: JSON.stringify({ project: 'alpha', agent: 'hermes', title: 'Original create', priority: 'medium',
+          baseBranch: 'main', branchName: 'agent/original', autoStart: false }) });
       assert.equal(response.status, 200);
       assert.equal((await response.json() as { attempt: ExecutionAttempt }).attempt.id, 'legacy-create-attempt');
       response = await fetch(`${base}/api/orchestrations`, { method: 'POST',
         headers: { 'content-type': 'application/json', 'idempotency-key': 'legacy-create-key' },
-        body: JSON.stringify({ project: 'alpha', agent: 'hermes', title: 'Changed create', autoStart: false }) });
+        body: JSON.stringify({ project: 'alpha', agent: 'hermes', title: 'Original create', autoStart: false }) });
+      assert.equal(response.status, 409);
+      response = await fetch(`${base}/api/orchestrations`, { method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': 'legacy-create-key' },
+        body: JSON.stringify({ project: 'alpha', agent: 'hermes', title: 'Changed create', priority: 'medium',
+          baseBranch: 'main', branchName: 'agent/original', autoStart: false }) });
       assert.equal(response.status, 409);
 
       const continuationHeaders = { 'content-type': 'application/json', 'idempotency-key': 'legacy-continuation-key' };
       response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: continuationHeaders,
-        body: JSON.stringify({ project: 'alpha', task: legacyContinuationTask.id, description: 'Original continuation', autoStart: false }) });
+        body: JSON.stringify({ project: 'alpha', task: legacyContinuationTask.id, description: 'Original continuation', priority: 'medium',
+          baseBranch: 'main', branchName: 'agent/legacy-continuation-card', autoStart: false }) });
       assert.equal(response.status, 200);
       const continuationReplay = await response.json() as { attempt: ExecutionAttempt; continuation: boolean };
       assert.equal(continuationReplay.attempt.id, 'legacy-continuation-attempt');
       assert.equal(continuationReplay.continuation, true);
       response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: continuationHeaders,
-        body: JSON.stringify({ project: 'alpha', task: legacyContinuationTask.id, description: 'Changed continuation', autoStart: false }) });
+        body: JSON.stringify({ project: 'alpha', task: legacyContinuationTask.id, description: 'Original continuation', autoStart: false }) });
+      assert.equal(response.status, 409);
+      response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: continuationHeaders,
+        body: JSON.stringify({ project: 'alpha', task: legacyContinuationTask.id, description: 'Changed continuation', priority: 'medium',
+          baseBranch: 'main', branchName: 'agent/legacy-continuation-card', autoStart: false }) });
       assert.equal(response.status, 409);
 
       const retryHeaders = { 'content-type': 'application/json', 'idempotency-key': 'legacy-retry-key' };

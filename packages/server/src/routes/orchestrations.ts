@@ -270,9 +270,12 @@ async function legacyRequestConflicts(
 
   // These request attributes have no execution_attempt column fallback.
   // If the legacy snapshot did not capture one, only its omitted/default form
-  // can be accepted safely.
+  // can be accepted safely. Conversely, an explicit stored value cannot be
+  // treated as identical to an omitted create/continuation value: resolving
+  // that omission today could select a changed project/task default.
   for (const key of ['priority', 'baseBranch', 'branchName']) {
     if (snapshot[key] === undefined && identity[key] !== undefined) return true;
+    if (kind !== 'retry' && snapshot[key] !== undefined && identity[key] === undefined) return true;
   }
   if (snapshot.provenance === undefined && identity.provenance !== null) return true;
   return false;

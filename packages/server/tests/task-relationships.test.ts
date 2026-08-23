@@ -25,6 +25,10 @@ function makeDb() {
     CREATE TABLE task_relationships(task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
       related_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, type TEXT NOT NULL DEFAULT 'related',
       created_at INTEGER NOT NULL, PRIMARY KEY(task_id,related_task_id), CHECK(task_id < related_task_id));
+    CREATE TABLE execution_attempts(id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      external_source TEXT NOT NULL, external_key TEXT NOT NULL, title_snapshot TEXT NOT NULL, description_snapshot TEXT NOT NULL,
+      agent_type TEXT NOT NULL, related_task_id TEXT, auto_start INTEGER NOT NULL, timeout_minutes INTEGER,
+      status TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(external_source, external_key));
   `);
   return db;
 }
@@ -110,24 +114,60 @@ test('relationship API fails closed on ambiguity and replays idempotently', asyn
   } finally { db.close(); }
 });
 
-test('orchestration relates new work and continuation reuses the durable task id', async () => {
+test('orchestration persists distinct attempts, replays continuations, and tracks ordinary cards', async () => {
   const db = makeDb();
   const repo = new SqliteTaskRepository(db);
   try {
     await repo.create(task('existing', 'project-a', 'Existing work'));
+    await repo.create(task('other', 'project-a', 'Other work'));
     await withApi(repo, async (base) => {
       let response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'new-work-1' }, body: JSON.stringify({ project: 'alpha', agent: 'hermes', title: 'New work', relatedItem: 'existing', autoStart: false }) });
       assert.equal(response.status, 201);
-      const created = await response.json() as { task: Task };
+      const created = await response.json() as { task: Task; attempt: { id: string } };
+      assert.ok(created.attempt.id);
       assert.deepEqual((await repo.getRelationships(created.task.id)).map((relation) => relation.relatedTaskId), ['existing']);
 
-      response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project: 'project-a', task: 'Existing work', description: 'Continue this work', autoStart: false }) });
+      response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'continue-1' }, body: JSON.stringify({ project: 'project-a', task: 'Existing work', description: 'Continue this work', autoStart: false }) });
       assert.equal(response.status, 202);
-      const continued = await response.json() as { task: Task; continuation: boolean };
+      const continued = await response.json() as { task: Task; attempt: { id: string }; continuation: boolean };
       assert.equal(continued.continuation, true);
       assert.equal(continued.task.id, 'existing');
-      assert.equal(continued.task.description, 'Continue this work');
-      assert.equal(await repo.count(), 2);
+      assert.notEqual(continued.attempt.id, created.attempt.id);
+      assert.equal((await repo.getAttemptsByTaskId('existing')).length, 1);
+
+      response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'continue-1' }, body: JSON.stringify({ project: 'project-a', task: 'Existing work', description: 'Continue this work', autoStart: false }) });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('idempotent-replay'), 'true');
+      assert.equal(((await response.json()) as { attempt: { id: string } }).attempt.id, continued.attempt.id);
+      assert.equal((await repo.getAttemptsByTaskId('existing')).length, 1);
+
+      response = await fetch(`${base}/api/orchestrations/existing`);
+      assert.equal(response.status, 200);
+      assert.equal(((await response.json()) as { contract: { attemptId: string } }).contract.attemptId, continued.attempt.id);
+      assert.equal(await repo.count(), 3);
+    });
+  } finally { db.close(); }
+});
+
+test('orchestration idempotency binds related item and validation has no relationship side effects', async () => {
+  const db = makeDb();
+  const repo = new SqliteTaskRepository(db);
+  try {
+    await repo.create(task('one'));
+    await repo.create(task('two'));
+    await withApi(repo, async (base) => {
+      const headers = { 'content-type': 'application/json', 'idempotency-key': 'relation-contract' };
+      let response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers, body: JSON.stringify({ project: 'alpha', agent: 'hermes', title: 'Child', relatedItem: 'one', autoStart: false }) });
+      assert.equal(response.status, 201);
+      const child = (await response.json() as { task: Task }).task;
+      response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers, body: JSON.stringify({ project: 'alpha', agent: 'hermes', title: 'Child', relatedItem: 'two', autoStart: false }) });
+      assert.equal(response.status, 409);
+      assert.deepEqual((await repo.getRelationships(child.id)).map((item) => item.relatedTaskId), ['one']);
+
+      response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'invalid-continuation' }, body: JSON.stringify({ project: 'alpha', task: 'one', relatedItem: 'two', description: 'x'.repeat(100_001), autoStart: false }) });
+      assert.equal(response.status, 400);
+      assert.deepEqual(await repo.getRelationships('one'), [{ taskId: 'one', relatedTaskId: child.id, type: 'related', createdAt: (await repo.getRelationships('one'))[0].createdAt }]);
+      assert.equal((await repo.getAttemptsByTaskId('one')).length, 0);
     });
   } finally { db.close(); }
 });

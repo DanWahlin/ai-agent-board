@@ -187,6 +187,24 @@ function migrate(db: Database.Database): void {
     )
   `);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_task_relationships_related ON task_relationships(related_task_id)`);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS execution_attempts (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      external_source TEXT NOT NULL,
+      external_key TEXT NOT NULL,
+      title_snapshot TEXT NOT NULL,
+      description_snapshot TEXT NOT NULL,
+      agent_type TEXT NOT NULL,
+      related_task_id TEXT,
+      auto_start INTEGER NOT NULL,
+      timeout_minutes INTEGER,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'dispatched')),
+      created_at INTEGER NOT NULL,
+      UNIQUE (external_source, external_key)
+    )
+  `);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_execution_attempts_task ON execution_attempts(task_id, created_at)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_column_id ON tasks(column_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_agent_status ON tasks(agent_status)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_column_created ON tasks(column_id, created_at)`);
@@ -546,6 +564,24 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
     )
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_task_relationships_related ON task_relationships(related_task_id)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS execution_attempts (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      external_source TEXT NOT NULL,
+      external_key TEXT NOT NULL,
+      title_snapshot TEXT NOT NULL,
+      description_snapshot TEXT NOT NULL,
+      agent_type TEXT NOT NULL,
+      related_task_id TEXT,
+      auto_start BOOLEAN NOT NULL,
+      timeout_minutes INTEGER,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'dispatched')),
+      created_at BIGINT NOT NULL,
+      UNIQUE (external_source, external_key)
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_execution_attempts_task ON execution_attempts(task_id, created_at)`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS events (

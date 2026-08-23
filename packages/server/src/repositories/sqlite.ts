@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import type { Task, Priority, ColumnId, AgentStatus, AgentType, AgentEvent, TaskRelationship } from '../types.js';
+import type { Task, Priority, ColumnId, AgentStatus, AgentType, AgentEvent, TaskRelationship, ExecutionAttempt } from '../types.js';
 import type { TaskRepository } from './types.js';
 import { errorMessage } from '../utils.js';
 
@@ -56,6 +56,20 @@ function rowToTask(row: TaskRow): Task {
     runRequestedAt: row.run_requested_at ?? undefined, runClaimedAt: row.run_claimed_at ?? undefined,
     timeoutMinutes: row.timeout_minutes ?? undefined,
   };
+}
+
+interface AttemptRow {
+  id: string; task_id: string; external_source: string; external_key: string;
+  title_snapshot: string; description_snapshot: string; agent_type: AgentType;
+  related_task_id: string | null; auto_start: number; timeout_minutes: number | null;
+  status: ExecutionAttempt['status']; created_at: number;
+}
+
+function rowToAttempt(row: AttemptRow): ExecutionAttempt {
+  return { id: row.id, taskId: row.task_id, externalSource: row.external_source, externalKey: row.external_key,
+    titleSnapshot: row.title_snapshot, descriptionSnapshot: row.description_snapshot, agentType: row.agent_type,
+    relatedTaskId: row.related_task_id ?? undefined, autoStart: Boolean(row.auto_start),
+    timeoutMinutes: row.timeout_minutes ?? undefined, status: row.status, createdAt: row.created_at };
 }
 
 export class SqliteTaskRepository implements TaskRepository {
@@ -287,5 +301,31 @@ export class SqliteTaskRepository implements TaskRepository {
   async deleteRelationship(taskId: string, relatedTaskId: string): Promise<boolean> {
     const [left, right] = taskId < relatedTaskId ? [taskId, relatedTaskId] : [relatedTaskId, taskId];
     return this.db.prepare('DELETE FROM task_relationships WHERE task_id = ? AND related_task_id = ?').run(left, right).changes > 0;
+  }
+
+  async getAttemptById(id: string): Promise<ExecutionAttempt | undefined> {
+    const row = this.db.prepare('SELECT * FROM execution_attempts WHERE id=?').get(id) as AttemptRow | undefined;
+    return row ? rowToAttempt(row) : undefined;
+  }
+
+  async getAttemptByExternalIdentity(source: string, key: string): Promise<ExecutionAttempt | undefined> {
+    const row = this.db.prepare('SELECT * FROM execution_attempts WHERE external_source=? AND external_key=?').get(source, key) as AttemptRow | undefined;
+    return row ? rowToAttempt(row) : undefined;
+  }
+
+  async getAttemptsByTaskId(taskId: string): Promise<ExecutionAttempt[]> {
+    return (this.db.prepare('SELECT * FROM execution_attempts WHERE task_id=? ORDER BY created_at,id').all(taskId) as AttemptRow[]).map(rowToAttempt);
+  }
+
+  async createAttemptIdempotent(attempt: ExecutionAttempt): Promise<{ attempt: ExecutionAttempt; created: boolean }> {
+    const result = this.db.prepare(`INSERT OR IGNORE INTO execution_attempts
+      (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,status,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(attempt.id, attempt.taskId, attempt.externalSource, attempt.externalKey,
+        attempt.titleSnapshot, attempt.descriptionSnapshot, attempt.agentType, attempt.relatedTaskId ?? null,
+        attempt.autoStart ? 1 : 0, attempt.timeoutMinutes ?? null, attempt.status, attempt.createdAt);
+    if (result.changes) return { attempt, created: true };
+    const existing = await this.getAttemptByExternalIdentity(attempt.externalSource, attempt.externalKey);
+    if (!existing) throw new Error('failed to persist execution attempt');
+    return { attempt: existing, created: false };
   }
 }

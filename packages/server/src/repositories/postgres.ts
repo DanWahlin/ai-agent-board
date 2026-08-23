@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import type { Task, Priority, ColumnId, AgentStatus, AgentType, AgentEvent, TaskRelationship } from '../types.js';
+import type { Task, Priority, ColumnId, AgentStatus, AgentType, AgentEvent, TaskRelationship, ExecutionAttempt } from '../types.js';
 import type { TaskRepository } from './types.js';
 import { isValidPriority, isValidColumnId, isValidAgentStatus, isValidAgentType } from '@ai-agent-board/shared/constants.js';
 import { errorMessage } from '../utils.js';
@@ -77,6 +77,20 @@ function rowToTask(row: TaskRow): Task {
     runRequestedAt: row.run_requested_at != null ? Number(row.run_requested_at) : undefined, runClaimedAt: row.run_claimed_at != null ? Number(row.run_claimed_at) : undefined,
     timeoutMinutes: row.timeout_minutes ?? undefined,
   };
+}
+
+interface AttemptRow {
+  id: string; task_id: string; external_source: string; external_key: string;
+  title_snapshot: string; description_snapshot: string; agent_type: AgentType;
+  related_task_id: string | null; auto_start: boolean; timeout_minutes: number | null;
+  status: ExecutionAttempt['status']; created_at: string;
+}
+
+function rowToAttempt(row: AttemptRow): ExecutionAttempt {
+  return { id: row.id, taskId: row.task_id, externalSource: row.external_source, externalKey: row.external_key,
+    titleSnapshot: row.title_snapshot, descriptionSnapshot: row.description_snapshot, agentType: row.agent_type,
+    relatedTaskId: row.related_task_id ?? undefined, autoStart: row.auto_start,
+    timeoutMinutes: row.timeout_minutes ?? undefined, status: row.status, createdAt: Number(row.created_at) };
 }
 
 export class PostgresTaskRepository implements TaskRepository {
@@ -299,5 +313,33 @@ export class PostgresTaskRepository implements TaskRepository {
   async deleteRelationship(taskId: string, relatedTaskId: string): Promise<boolean> {
     const [left, right] = taskId < relatedTaskId ? [taskId, relatedTaskId] : [relatedTaskId, taskId];
     return ((await this.pool.query('DELETE FROM task_relationships WHERE task_id=$1 AND related_task_id=$2', [left, right])).rowCount ?? 0) > 0;
+  }
+
+  async getAttemptById(id: string): Promise<ExecutionAttempt | undefined> {
+    const { rows } = await this.pool.query<AttemptRow>('SELECT * FROM execution_attempts WHERE id=$1', [id]);
+    return rows[0] ? rowToAttempt(rows[0]) : undefined;
+  }
+
+  async getAttemptByExternalIdentity(source: string, key: string): Promise<ExecutionAttempt | undefined> {
+    const { rows } = await this.pool.query<AttemptRow>('SELECT * FROM execution_attempts WHERE external_source=$1 AND external_key=$2', [source,key]);
+    return rows[0] ? rowToAttempt(rows[0]) : undefined;
+  }
+
+  async getAttemptsByTaskId(taskId: string): Promise<ExecutionAttempt[]> {
+    const { rows } = await this.pool.query<AttemptRow>('SELECT * FROM execution_attempts WHERE task_id=$1 ORDER BY created_at,id', [taskId]);
+    return rows.map(rowToAttempt);
+  }
+
+  async createAttemptIdempotent(attempt: ExecutionAttempt): Promise<{ attempt: ExecutionAttempt; created: boolean }> {
+    const { rows } = await this.pool.query<AttemptRow>(`INSERT INTO execution_attempts
+      (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,status,created_at)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+      ON CONFLICT(external_source,external_key) DO NOTHING RETURNING *`,
+      [attempt.id,attempt.taskId,attempt.externalSource,attempt.externalKey,attempt.titleSnapshot,attempt.descriptionSnapshot,
+        attempt.agentType,attempt.relatedTaskId ?? null,attempt.autoStart,attempt.timeoutMinutes ?? null,attempt.status,attempt.createdAt]);
+    if (rows[0]) return { attempt: rowToAttempt(rows[0]), created: true };
+    const existing = await this.getAttemptByExternalIdentity(attempt.externalSource, attempt.externalKey);
+    if (!existing) throw new Error('failed to persist execution attempt');
+    return { attempt: existing, created: false };
   }
 }

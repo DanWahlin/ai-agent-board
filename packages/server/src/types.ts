@@ -6,6 +6,7 @@ export type {
   AgentType,
   Task,
   TaskRelationship,
+  ExecutionAttempt,
   TaskProvenance,
   TaskGroup,
   TaskTemplate,

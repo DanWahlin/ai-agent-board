@@ -98,7 +98,9 @@ function TaskCardComponent({ task, onClick, onEdit, onDelete, onArchive, onUnarc
       {...attributes}
       {...listeners}
       className={cn(
-        'group relative cursor-grab active:cursor-grabbing rounded-lg border border-border bg-card p-3 shadow-sm transition-all',
+        // touch-manipulation keeps native pan/scroll gestures working; the
+        // TouchSensor press-and-hold delay is what activates a card drag.
+        'group relative cursor-grab touch-manipulation active:cursor-grabbing rounded-lg border border-border bg-card p-3 shadow-sm transition-all max-lg:select-none',
         'hover:border-primary/30 hover:shadow-md',
         priorityDisplay?.borderClass,
         isDragging && 'z-50 rotate-2 scale-105 shadow-xl opacity-90',
@@ -111,7 +113,7 @@ function TaskCardComponent({ task, onClick, onEdit, onDelete, onArchive, onUnarc
       {/* Action buttons — top right, visible on hover */}
       {(onEdit || onDelete || onArchive || onUnarchive || onRetry) && (
         <div
-          className="absolute right-2 top-2 flex items-center gap-0.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
+          className="absolute right-2 top-2 flex items-center gap-0.5 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity"
           onPointerDown={(e) => e.stopPropagation()}
         >
           {onRetry && task.agentStatus === 'failed' && !task.archived && (

@@ -46,7 +46,7 @@ export function GroupPanel({ group, onClose, onRunGroup, onStopGroup, onRetryChi
         animate={{ x: 0 }}
         exit={{ x: '100%' }}
         transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-        className="fixed right-0 top-0 z-[60] flex h-full w-full max-w-md flex-col border-l border-zinc-700 bg-zinc-900 shadow-2xl"
+        className="fixed inset-0 z-[60] flex w-full flex-col bg-zinc-900 shadow-2xl pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] lg:inset-auto lg:right-0 lg:top-0 lg:h-full lg:max-w-md lg:border-l lg:border-zinc-700"
       >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-zinc-700 px-4 py-3">
@@ -58,7 +58,7 @@ export function GroupPanel({ group, onClose, onRunGroup, onStopGroup, onRetryChi
             {!isRunning && status.idle > 0 && (
               <button
                 onClick={() => onRunGroup(group.id)}
-                className="flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500"
+                className="flex min-h-11 items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 lg:min-h-0"
               >
                 <Play className="h-3 w-3" /> Run
               </button>
@@ -66,12 +66,12 @@ export function GroupPanel({ group, onClose, onRunGroup, onStopGroup, onRetryChi
             {isRunning && (
               <button
                 onClick={() => onStopGroup(group.id)}
-                className="flex items-center gap-1 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-500"
+                className="flex min-h-11 items-center gap-1 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-500 lg:min-h-0"
               >
                 <Square className="h-3 w-3" /> Stop All
               </button>
             )}
-            <button onClick={onClose} className="rounded-lg p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200">
+            <button onClick={onClose} className="flex h-11 w-11 items-center justify-center rounded-lg text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 lg:h-auto lg:w-auto lg:p-1">
               <X className="h-5 w-5" />
             </button>
           </div>
@@ -150,7 +150,7 @@ export function GroupPanel({ group, onClose, onRunGroup, onStopGroup, onRetryChi
                   {child.agentStatus === 'failed' && (
                     <button
                       onClick={(e) => { e.stopPropagation(); onRetryChild(child.id); }}
-                      className="rounded p-1 text-zinc-400 hover:bg-zinc-700 hover:text-amber-400"
+                      className="flex h-11 w-11 items-center justify-center rounded text-zinc-400 hover:bg-zinc-700 hover:text-amber-400 lg:h-auto lg:w-auto lg:p-1"
                       title="Retry"
                     >
                       <RotateCcw className="h-3.5 w-3.5" />

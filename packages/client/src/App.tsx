@@ -374,7 +374,7 @@ function BoardPage({
   }, [error, clearError]);
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden">
+    <div className="flex h-dvh flex-col overflow-hidden">
       <Header
         title={project.name === 'Default' ? 'AI Agent Board' : project.name}
         onBackToProjects={onBackToProjects}
@@ -596,7 +596,7 @@ export function App() {
 
   if (loading || !selectedProject) {
     return (
-      <div className="flex h-screen items-center justify-center bg-background text-sm text-muted-foreground">
+      <div className="flex h-dvh items-center justify-center bg-background text-sm text-muted-foreground">
         Loading project…
       </div>
     );

@@ -644,7 +644,15 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
             animate={{ x: 0, opacity: 1 }}
             exit={{ x: '100%', opacity: 0 }}
             transition={{ type: 'spring', damping: 30, stiffness: 300 }}
-            className="fixed right-0 top-0 z-[60] flex h-full w-full flex-col border-l border-border bg-card shadow-2xl md:max-w-md md:w-[420px]"
+            id="agent-panel"
+            className={cn(
+              // Phones + short landscape (<lg): intentional full-viewport sheet
+              // (inset-0, iOS safe-area padding). lg+: classic right-side
+              // drawer with a sensible width cap.
+              'fixed inset-0 z-[60] flex w-full flex-col bg-card shadow-2xl',
+              'pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]',
+              'lg:inset-auto lg:right-0 lg:top-0 lg:h-full lg:w-[420px] lg:max-w-[90vw] lg:border-l lg:border-border'
+            )}
           >
           {/* Progress bar */}
           {(task.agentStatus === 'planning' || task.agentStatus === 'executing' || task.agentStatus === 'complete') && (
@@ -663,7 +671,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
           )}
 
           {/* Header */}
-          <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
+          <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-2 lg:py-3">
             <div className="min-w-0 flex-1">
               <h3 className="truncate text-sm font-semibold">{task.title}</h3>
               <div className="mt-0.5 flex items-center gap-2">
@@ -703,7 +711,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
               {!isActive && task.agentStatus !== 'complete' && onRun && (
                 <button
                   onClick={() => onRun(task.id)}
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-muted text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20 transition-colors"
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-border bg-muted text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20 transition-colors lg:h-9 lg:w-9"
                   title={task.agentStatus === 'failed' ? 'Retry agent' : 'Run agent'}
                 >
                   {task.agentStatus === 'failed' ? <RotateCw className="h-4 w-4" /> : <Play className="h-4 w-4" />}
@@ -712,7 +720,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
               {!isActive && task.agentStatus === 'failed' && onReconfigureRetry && (
                 <button
                   onClick={() => onReconfigureRetry(task.id)}
-                  className="flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-muted px-3 text-xs font-medium text-amber-500 dark:text-amber-400 hover:bg-amber-500/20 transition-colors"
+                  className="flex h-11 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-muted px-3 text-xs font-medium text-amber-500 dark:text-amber-400 hover:bg-amber-500/20 transition-colors lg:h-9"
                   title="Reconfigure and retry"
                 >
                   <Cog className="h-3.5 w-3.5" />
@@ -722,7 +730,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
               {isActive && onStop && (
                 <button
                   onClick={() => onStop(task.id)}
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-muted text-red-500 dark:text-red-400 hover:bg-red-500/20 transition-colors"
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-border bg-muted text-red-500 dark:text-red-400 hover:bg-red-500/20 transition-colors lg:h-9 lg:w-9"
                   title="Stop agent"
                 >
                   <Square className="h-4 w-4" />
@@ -730,7 +738,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
               )}
               <button
                 onClick={onClose}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-muted text-foreground hover:bg-destructive hover:text-white hover:border-destructive transition-colors"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-border bg-muted text-foreground hover:bg-destructive hover:text-white hover:border-destructive transition-colors lg:h-9 lg:w-9"
                 title="Close panel (Esc)"
               >
                 <X className="h-5 w-5" strokeWidth={2.5} />
@@ -765,7 +773,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
                     transition={{ duration: 0.15 }}
                     className="overflow-hidden"
                   >
-                    <div className="max-h-[30vh] overflow-y-auto px-4 pb-3 prose prose-xs dark:prose-invert max-w-none text-xs text-muted-foreground leading-relaxed [&_code]:rounded [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[11px] [&_a]:text-primary [&_a]:underline" style={{ '--tw-prose-code-bg': 'var(--prose-code-bg)' } as React.CSSProperties}>
+                    <div className="max-h-[30dvh] overflow-y-auto px-4 pb-3 prose prose-xs dark:prose-invert max-w-none text-xs text-muted-foreground leading-relaxed [&_code]:rounded [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[11px] [&_a]:text-primary [&_a]:underline" style={{ '--tw-prose-code-bg': 'var(--prose-code-bg)' } as React.CSSProperties}>
                       <style>{`.prose code { background-color: var(--prose-code-bg); } .prose pre { background-color: var(--code-bg); padding: 0.5rem; border-radius: 0.375rem; }`}</style>
                       <Markdown
                         allowedElements={[
@@ -786,11 +794,11 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
           {/* Worktree info bar */}
           {task.branchName && (
             <div className="shrink-0 border-b border-border px-4 py-2 space-y-1.5">
-              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <GitBranch className="h-3 w-3 text-primary" />
-                <span className="font-mono text-foreground">{task.branchName}</span>
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
+                <GitBranch className="h-3 w-3 shrink-0 text-primary" />
+                <span className="min-w-0 break-all font-mono text-foreground">{task.branchName}</span>
                 <span className="text-muted-foreground/50">from</span>
-                <span className="font-mono">{task.baseBranch || 'main'}</span>
+                <span className="min-w-0 break-all font-mono">{task.baseBranch || 'main'}</span>
               </div>
               {task.worktreePath && (
                 <div className="text-[10px] text-muted-foreground font-mono truncate">
@@ -800,7 +808,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
 
               {/* PR / Cleanup actions — show when task is done or complete */}
               {(task.agentStatus === 'complete' || task.columnId === 'done') && (
-                <div className="flex items-center gap-2 pt-1">
+                <div className="flex items-center gap-2 overflow-x-auto pb-0.5 pt-1">
                   {!prUrl && onCreatePR && hasRemote === true && (
                     <button
                       onClick={async () => {
@@ -815,7 +823,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
                         setPrLoading(false);
                       }}
                       disabled={prLoading}
-                      className="flex items-center gap-1.5 rounded-md border border-border bg-muted px-2.5 py-1 text-xs font-medium text-foreground hover:bg-accent transition-colors disabled:opacity-50"
+                      className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border max-lg:min-h-11 border-border bg-muted px-2.5 py-1 text-xs font-medium text-foreground hover:bg-accent transition-colors disabled:opacity-50"
                     >
                       <ExternalLink className="h-3 w-3" />
                       {prLoading ? 'Creating...' : 'Create PR'}
@@ -826,7 +834,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
                       href={prUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20 transition-colors"
+                      className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border max-lg:min-h-11 border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20 transition-colors"
                     >
                       <ExternalLink className="h-3 w-3" />
                       View PR
@@ -846,14 +854,14 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
                         setMergeLoading(false);
                       }}
                       disabled={mergeLoading}
-                      className="flex items-center gap-1.5 rounded-md border border-border bg-muted px-2.5 py-1 text-xs font-medium text-foreground hover:bg-accent transition-colors disabled:opacity-50"
+                      className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border max-lg:min-h-11 border-border bg-muted px-2.5 py-1 text-xs font-medium text-foreground hover:bg-accent transition-colors disabled:opacity-50"
                     >
                       <GitMerge className="h-3 w-3" />
                       {mergeLoading ? 'Merging...' : `Merge to ${task.baseBranch || 'main'}`}
                     </button>
                   )}
                   {mergeResult && (
-                    <span className="flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-400">
+                    <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border max-lg:min-h-11 border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-400">
                       <GitMerge className="h-3 w-3" />
                       Merged to {mergeResult}
                     </span>
@@ -861,7 +869,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
                   {task.worktreePath && onCleanupWorktree && (
                     <button
                       onClick={() => setShowWorktreeConfirm(true)}
-                      className="flex items-center gap-1.5 rounded-md border border-border bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-red-500/10 hover:text-red-400 hover:border-red-500/30 transition-colors"
+                      className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border max-lg:min-h-11 border-border bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-red-500/10 hover:text-red-400 hover:border-red-500/30 transition-colors"
                     >
                       <Trash2 className="h-3 w-3" />
                       Clean up worktree
@@ -908,13 +916,13 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
           )}
 
           {/* Tab bar */}
-          <div className="shrink-0 flex items-center justify-between border-b border-border px-2 pt-1">
-            <div className="flex gap-1">
+          <div className="shrink-0 flex items-center justify-between gap-2 border-b border-border px-2 pt-1">
+            <div data-panel-tabs className="flex min-w-0 flex-1 gap-1 overflow-x-auto">
             {showSummaryTab && (
               <button
                 onClick={() => selectTab('summary')}
                 className={cn(
-                  'px-3 py-1.5 text-xs font-medium rounded-t transition-colors',
+                  'flex shrink-0 items-center whitespace-nowrap px-3 py-1.5 text-xs font-medium rounded-t transition-colors max-lg:min-h-11',
                   activeTab === 'summary'
                     ? 'bg-card border border-border border-b-card text-foreground -mb-px'
                     : 'text-muted-foreground hover:text-foreground'
@@ -926,7 +934,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
             <button
               onClick={() => selectTab('events')}
               className={cn(
-                'px-3 py-1.5 text-xs font-medium rounded-t transition-colors',
+                'flex min-h-11 shrink-0 items-center whitespace-nowrap px-3 py-1.5 text-xs font-medium rounded-t transition-colors lg:min-h-0',
                 activeTab === 'events'
                   ? 'bg-card border border-border border-b-card text-foreground -mb-px'
                   : 'text-muted-foreground hover:text-foreground'
@@ -937,7 +945,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
             <button
               onClick={() => selectTab('terminal')}
               className={cn(
-                'px-3 py-1.5 text-xs font-medium rounded-t transition-colors',
+                'flex min-h-11 shrink-0 items-center whitespace-nowrap px-3 py-1.5 text-xs font-medium rounded-t transition-colors lg:min-h-0',
                 activeTab === 'terminal'
                   ? 'bg-card border border-border border-b-card text-foreground -mb-px'
                   : 'text-muted-foreground hover:text-foreground'
@@ -948,7 +956,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
             <button
               onClick={() => selectTab('changes')}
               className={cn(
-                'px-3 py-1.5 text-xs font-medium rounded-t transition-colors',
+                'flex min-h-11 shrink-0 items-center whitespace-nowrap px-3 py-1.5 text-xs font-medium rounded-t transition-colors lg:min-h-0',
                 activeTab === 'changes'
                   ? 'bg-card border border-border border-b-card text-foreground -mb-px'
                   : 'text-muted-foreground hover:text-foreground'
@@ -971,7 +979,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
                   a.href = url; a.download = `agent-log-${task.id}.md`; a.click();
                   URL.revokeObjectURL(url);
                 }}
-                className="flex items-center gap-1 px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                className="flex shrink-0 items-center gap-1 px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors max-lg:min-h-11"
                 title="Download event log as markdown"
               >
                 <Download className="h-3 w-3" />
@@ -1110,7 +1118,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
           )}
 
           {/* Follow-up message input — fixed at bottom */}
-          <div className="shrink-0 border-t border-border bg-card px-3 py-2">
+          <div className="shrink-0 border-t border-border bg-card px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
             {/* Image previews */}
             {followUpImages.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mb-2">
@@ -1133,7 +1141,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
                 type="button"
                 onClick={() => imageInputRef.current?.click()}
                 disabled={agentStatus !== 'executing' || sending}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed lg:h-8 lg:w-8"
                 title="Attach images"
               >
                 <Paperclip className="h-3.5 w-3.5" />
@@ -1163,12 +1171,12 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
                 }}
                 placeholder="Send a message to the agent..."
                 disabled={agentStatus !== 'executing' || sending}
-                className="flex-1 rounded-md border border-border bg-muted px-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-40 disabled:cursor-not-allowed"
+                className="h-11 min-w-0 flex-1 rounded-md border border-border bg-muted px-3 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-40 disabled:cursor-not-allowed lg:h-auto lg:py-1.5"
               />
               <button
                 onClick={handleSendFollowUp}
                 disabled={agentStatus !== 'executing' || sending || (!followUpMessage.trim() && followUpImages.length === 0)}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-primary hover:bg-primary/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-primary hover:bg-primary/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed lg:h-8 lg:w-8"
                 title="Send message"
               >
                 <Send className="h-3.5 w-3.5" />

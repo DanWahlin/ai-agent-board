@@ -64,7 +64,7 @@ export function Column({ column, tasks, onTaskClick, onEditTask, onDeleteTask, o
   }, [column.color]);
 
   return (
-    <div className="flex h-full w-full shrink-0 flex-col md:w-72 lg:w-80 max-md:h-auto max-md:min-h-52" data-column={column.id}>
+    <div className="flex h-full w-full min-w-0 flex-col" data-column={column.id}>
       {/* Column header */}
       <div className="mb-3 flex items-center justify-between px-1">
         <div className="flex items-center gap-2">
@@ -80,7 +80,8 @@ export function Column({ column, tasks, onTaskClick, onEditTask, onDeleteTask, o
           <motion.button
             whileTap={{ scale: 0.9 }}
             onClick={onAddTask}
-            className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            aria-label="Add task"
+            className="-my-2 flex h-11 w-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground lg:my-0 lg:h-6 lg:w-6"
           >
             <Plus className="h-4 w-4" />
           </motion.button>
@@ -117,12 +118,12 @@ export function Column({ column, tasks, onTaskClick, onEditTask, onDeleteTask, o
           {tasks.length === 0 && (!extraContent || (Array.isArray(extraContent) && extraContent.length === 0)) && (
             <div className="flex flex-1 items-center justify-center py-4">
               <div className="text-center">
-                <Icon className="mx-auto h-5 w-5 text-muted-foreground/30 md:h-6 md:w-6" />
+                <Icon className="mx-auto h-5 w-5 text-muted-foreground/30 lg:h-6 lg:w-6" />
                 <p className="mt-1 text-xs text-muted-foreground/50">
-                  {column.id === 'backlog' && <><span className="hidden md:inline">Press N to create a task or G for a group</span><span className="md:hidden">Add a task or group</span></>}
-                  {column.id === 'in-progress' && <><span className="hidden md:inline">Drag tasks here to start AI agents</span><span className="md:hidden">Drag tasks here</span></>}
-                  {column.id === 'review' && <><span className="hidden md:inline">Completed tasks appear here for review</span><span className="md:hidden">Completed tasks</span></>}
-                  {column.id === 'done' && <><span className="hidden md:inline">Move reviewed tasks here when finished</span><span className="md:hidden">Reviewed tasks</span></>}
+                  {column.id === 'backlog' && <><span className="hidden lg:inline">Press N to create a task or G for a group</span><span className="lg:hidden">Add a task or group</span></>}
+                  {column.id === 'in-progress' && <><span className="hidden lg:inline">Drag tasks here to start AI agents</span><span className="lg:hidden">Drag tasks here</span></>}
+                  {column.id === 'review' && <><span className="hidden lg:inline">Completed tasks appear here for review</span><span className="lg:hidden">Completed tasks</span></>}
+                  {column.id === 'done' && <><span className="hidden lg:inline">Move reviewed tasks here when finished</span><span className="lg:hidden">Reviewed tasks</span></>}
                   {!['backlog', 'in-progress', 'review', 'done'].includes(column.id) && 'No tasks'}
                 </p>
               </div>

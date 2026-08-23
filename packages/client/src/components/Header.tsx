@@ -52,13 +52,13 @@ export function Header({ theme, toggleTheme, searchQuery, onSearchChange, showAr
 
   return (
     <header className="sticky top-0 z-50 border-b border-zinc-700/30 bg-zinc-900 shadow-md">
-      <div className="flex h-14 items-center justify-between px-3 md:px-6">
+      <div className="flex h-14 items-center justify-between gap-2 px-3 max-lg:pl-[max(0.75rem,env(safe-area-inset-left))] max-lg:pr-[max(0.75rem,env(safe-area-inset-right))] lg:px-6">
         {/* Logo + title */}
-        <div className="flex min-w-0 items-center gap-2 md:gap-3">
+        <div className="flex min-w-0 items-center gap-2 lg:gap-3">
           {onBackToProjects && (
             <button
               onClick={onBackToProjects}
-              className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-zinc-700 bg-zinc-800 px-2 text-xs font-medium text-zinc-300 transition-colors hover:bg-zinc-700 hover:text-white"
+              className="flex h-11 shrink-0 items-center gap-1 rounded-lg border border-zinc-700 bg-zinc-800 px-2.5 text-xs font-medium text-zinc-300 transition-colors hover:bg-zinc-700 hover:text-white lg:h-8 lg:px-2"
               aria-label="Back to Projects"
             >
               <ArrowLeft className="h-3.5 w-3.5" />
@@ -68,10 +68,10 @@ export function Header({ theme, toggleTheme, searchQuery, onSearchChange, showAr
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-500">
             <Kanban className="h-4 w-4 text-white" />
           </div>
-          <h1 className="truncate text-base font-semibold tracking-tight text-white md:text-lg">
+          <h1 className="truncate text-base font-semibold tracking-tight text-white lg:text-lg">
             {title}
           </h1>
-          <span className="hidden items-center gap-1 text-[10px] md:flex">
+          <span className="hidden items-center gap-1 text-[10px] lg:flex">
             {wsStatus === 'connected' && (
               <>
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
@@ -94,11 +94,11 @@ export function Header({ theme, toggleTheme, searchQuery, onSearchChange, showAr
         </div>
 
         {/* Action buttons */}
-        <div className="flex items-center gap-1 md:gap-0">
+        <div className="flex items-center gap-1 lg:gap-0">
           {/* ── Desktop-only controls ── */}
 
           {/* Group 1: Create actions */}
-          <div className="hidden md:flex items-center gap-1.5">
+          <div className="hidden lg:flex items-center gap-1.5">
             <button
               onClick={onNewTask}
               className="flex items-center gap-1.5 h-8 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors px-3"
@@ -118,10 +118,10 @@ export function Header({ theme, toggleTheme, searchQuery, onSearchChange, showAr
           </div>
 
           {/* Divider */}
-          <div className="hidden md:block mx-2.5 h-5 w-px bg-zinc-700" />
+          <div className="hidden lg:block mx-2.5 h-5 w-px bg-zinc-700" />
 
           {/* Group 2: Search */}
-          <div className="relative hidden md:block">
+          <div className="relative hidden lg:block">
             <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-300" />
             <input
               type="text"
@@ -134,10 +134,10 @@ export function Header({ theme, toggleTheme, searchQuery, onSearchChange, showAr
           </div>
 
           {/* Divider */}
-          <div className="hidden md:block mx-2.5 h-5 w-px bg-zinc-700" />
+          <div className="hidden lg:block mx-2.5 h-5 w-px bg-zinc-700" />
 
           {/* Group 3: View controls — filter, sort, archive */}
-          <div className="hidden md:flex items-center gap-1.5">
+          <div className="hidden lg:flex items-center gap-1.5">
             {/* Filter toggle */}
             <button
               onClick={() => setShowFilters(!showFilters)}
@@ -192,14 +192,14 @@ export function Header({ theme, toggleTheme, searchQuery, onSearchChange, showAr
           </div>
 
           {/* Divider */}
-          <div className="hidden md:block mx-2.5 h-5 w-px bg-zinc-700" />
+          <div className="hidden lg:block mx-2.5 h-5 w-px bg-zinc-700" />
 
           <ThemeToggle theme={theme} toggleTheme={toggleTheme} />
 
           {/* ── Mobile hamburger ── */}
           <button
             onClick={() => setMobileMenuOpen((v) => !v)}
-            className={`flex h-8 w-8 items-center justify-center rounded-lg border transition-colors md:hidden ${
+            className={`flex h-11 w-11 items-center justify-center rounded-lg border transition-colors lg:hidden ${
               mobileMenuOpen || hasActiveFilters || showArchived
                 ? 'border-blue-500/50 bg-blue-500/10 text-blue-400'
                 : 'border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100'
@@ -207,14 +207,14 @@ export function Header({ theme, toggleTheme, searchQuery, onSearchChange, showAr
             aria-label={mobileMenuOpen ? 'Close menu' : 'Open menu'}
             aria-expanded={mobileMenuOpen}
           >
-            {mobileMenuOpen ? <X className="h-3.5 w-3.5" /> : <Menu className="h-3.5 w-3.5" />}
+            {mobileMenuOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
           </button>
         </div>
       </div>
 
       {/* ── Mobile expanded menu panel ── */}
       {mobileMenuOpen && (
-        <div className="md:hidden border-t border-zinc-700/40 bg-zinc-900 px-3 py-3 space-y-3">
+        <div className="lg:hidden border-t border-zinc-700/40 bg-zinc-900 px-3 py-3 space-y-3">
           {/* Search */}
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
@@ -225,7 +225,7 @@ export function Header({ theme, toggleTheme, searchQuery, onSearchChange, showAr
               onChange={(e) => onSearchChange(e.target.value)}
               placeholder="Search tasks..."
               aria-label="Search tasks"
-              className="h-9 w-full rounded-lg border border-zinc-700 bg-zinc-800 pl-8 pr-3 text-xs text-zinc-200 placeholder:text-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors"
+              className="h-11 w-full rounded-lg border border-zinc-700 bg-zinc-800 pl-8 pr-3 text-xs text-zinc-200 placeholder:text-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors"
             />
           </div>
 
@@ -233,14 +233,14 @@ export function Header({ theme, toggleTheme, searchQuery, onSearchChange, showAr
           <div className="flex gap-2">
             <button
               onClick={() => { onNewTask(); setMobileMenuOpen(false); }}
-              className="flex flex-1 items-center justify-center gap-1.5 h-9 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors"
+              className="flex flex-1 items-center justify-center gap-1.5 h-11 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors"
             >
               <Plus className="h-3.5 w-3.5 shrink-0" />
               New Task
             </button>
             <button
               onClick={() => { onNewGroup(); setMobileMenuOpen(false); }}
-              className="flex flex-1 items-center justify-center gap-1.5 h-9 rounded-lg border border-primary/50 text-primary text-xs font-medium hover:bg-primary/10 transition-colors"
+              className="flex flex-1 items-center justify-center gap-1.5 h-11 rounded-lg border border-primary/50 text-primary text-xs font-medium hover:bg-primary/10 transition-colors"
             >
               <Plus className="h-3.5 w-3.5 shrink-0" />
               New Group
@@ -254,7 +254,7 @@ export function Header({ theme, toggleTheme, searchQuery, onSearchChange, showAr
             <select
               value={sortBy}
               onChange={(e) => onSortByChange(e.target.value as SortBy)}
-              className="flex-1 h-9 rounded-lg border border-zinc-700 bg-zinc-800 px-2 text-xs text-zinc-200 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors"
+              className="flex-1 h-11 rounded-lg border border-zinc-700 bg-zinc-800 px-2 text-xs text-zinc-200 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors"
             >
               {SORT_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -262,7 +262,7 @@ export function Header({ theme, toggleTheme, searchQuery, onSearchChange, showAr
             </select>
             <button
               onClick={() => onSortDirChange(sortDir === 'asc' ? 'desc' : 'asc')}
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-zinc-700 bg-zinc-800 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100 transition-colors"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-zinc-700 bg-zinc-800 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100 transition-colors"
               aria-label={`Sort ${sortDir === 'asc' ? 'descending' : 'ascending'}`}
             >
               {sortDir === 'asc' ? '↑' : '↓'}
@@ -273,7 +273,7 @@ export function Header({ theme, toggleTheme, searchQuery, onSearchChange, showAr
           <div className="flex gap-2">
             <button
               onClick={() => setShowFilters(!showFilters)}
-              className={`flex flex-1 items-center justify-center gap-1.5 h-9 rounded-lg border transition-colors text-xs font-medium ${
+              className={`flex flex-1 items-center justify-center gap-1.5 h-11 rounded-lg border transition-colors text-xs font-medium ${
                 showFilters || hasActiveFilters
                   ? 'border-blue-500/50 bg-blue-500/10 text-blue-400'
                   : 'border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100'
@@ -285,7 +285,7 @@ export function Header({ theme, toggleTheme, searchQuery, onSearchChange, showAr
             </button>
             <button
               onClick={onToggleArchived}
-              className={`flex flex-1 items-center justify-center gap-1.5 h-9 rounded-lg border transition-colors text-xs font-medium ${
+              className={`flex flex-1 items-center justify-center gap-1.5 h-11 rounded-lg border transition-colors text-xs font-medium ${
                 showArchived
                   ? 'border-zinc-500 bg-zinc-700 text-zinc-100'
                   : 'border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100'
@@ -314,7 +314,7 @@ export function Header({ theme, toggleTheme, searchQuery, onSearchChange, showAr
 
       {/* Desktop filter chips row */}
       {showFilters && (
-        <div className="hidden md:flex items-center justify-end gap-2 px-6 pb-2">
+        <div className="hidden lg:flex items-center justify-end gap-2 px-6 pb-2">
           <FilterChips
             activeAgentTypes={activeAgentTypes}
             activeStatuses={activeStatuses}

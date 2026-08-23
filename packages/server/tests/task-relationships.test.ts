@@ -423,6 +423,8 @@ test('Postgres orchestration aggregate commits successful work and rolls back re
     if (relationSucceeds) {
       const result = await repo.createOrchestration(aggregateTask, aggregateAttempt, 'related-task', 7);
       assert.equal(result.created, true);
+      assert.match(calls.find((sql) => sql.startsWith('INSERT INTO tasks')) ?? '',
+        /ON CONFLICT\(external_source,external_key\)\s+WHERE external_source IS NOT NULL AND external_key IS NOT NULL\s+DO NOTHING/);
       assert.deepEqual(calls.filter((sql) => ['BEGIN', 'COMMIT', 'ROLLBACK'].includes(sql)), ['BEGIN', 'COMMIT']);
     } else {
       await assert.rejects(repo.createOrchestration(aggregateTask, aggregateAttempt, 'cross-project-task', 7), /same project/);

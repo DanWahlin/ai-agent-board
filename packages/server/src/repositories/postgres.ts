@@ -371,7 +371,9 @@ export class PostgresTaskRepository implements TaskRepository {
         created_at,started_at,completed_at,repo_path,branch_name,base_branch,use_worktree,worktree_path,archived,group_id,group_order,summary,
         external_source,external_key,provenance,run_requested_at,run_claimed_at,timeout_minutes)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
-        ON CONFLICT(external_source,external_key) DO NOTHING RETURNING *`, [task.id,task.projectId,task.title,task.description,task.priority,task.columnId,
+        ON CONFLICT(external_source,external_key)
+          WHERE external_source IS NOT NULL AND external_key IS NOT NULL
+        DO NOTHING RETURNING *`, [task.id,task.projectId,task.title,task.description,task.priority,task.columnId,
         task.agentStatus,task.agentType ?? 'copilot',task.createdAt,task.startedAt ?? null,task.completedAt ?? null,task.repoPath ?? null,
         task.branchName ?? null,task.baseBranch ?? null,task.useWorktree ?? null,task.worktreePath ?? null,task.archived ?? false,task.groupId ?? null,
         task.groupOrder ?? null,task.summary ?? null,task.externalSource ?? null,task.externalKey ?? null,task.provenance ? JSON.stringify(task.provenance) : null,

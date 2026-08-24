@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { randomUUID } from 'node:crypto';
-import type { Task, ExecutionAttempt } from '../types.js';
+import type { Task, ExecutionAttempt, AgentEvent } from '../types.js';
 import type { TaskRepository } from '../repositories/types.js';
 import type { ProjectRepository } from '../repositories/project-types.js';
 import type { AgentManager } from '../services/agent-manager.js';
@@ -20,6 +20,21 @@ import {
   MAX_DESCRIPTION_LENGTH,
   MAX_TITLE_LENGTH,
 } from '@ai-agent-board/shared/constants.js';
+
+const MAX_ORCHESTRATION_OUTPUT = 512 * 1024;
+
+export function extractOrchestrationOutput(events: AgentEvent[]): string | undefined {
+  let output = events
+    .filter((event) => event.type === 'output' && !event.content.startsWith('Git worktree created at '))
+    .map((event) => event.content)
+    .join('');
+  const summaryStart = output.lastIndexOf('<task-summary>');
+  if (summaryStart >= 0) output = output.slice(0, summaryStart);
+  output = output.replace(/<\/?task-summary>/g, '').trim();
+  if (!output) return undefined;
+  if (output.length <= MAX_ORCHESTRATION_OUTPUT) return output;
+  return `[Earlier agent output omitted because it exceeded ${MAX_ORCHESTRATION_OUTPUT} characters.]\n\n${output.slice(-MAX_ORCHESTRATION_OUTPUT)}`;
+}
 
 function sanitizeOrigin(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
@@ -330,7 +345,12 @@ export function createOrchestrationsRouter(
     }
     const attempt = addressedAttempt ?? attempts[attempts.length - 1];
     const deepLink = taskLink(req, task.projectId, task.id);
-    res.json({ task, attempt, attempts, contract: { projectId: task.projectId, taskId: task.id, attemptId: attempt?.id, deepLink } });
+    let output: string | undefined;
+    if (task.agentStatus === 'complete' || task.agentStatus === 'failed') {
+      try { output = extractOrchestrationOutput(await agents.getEvents(task.id)); }
+      catch { /* A readable orchestration must still fall back to its persisted summary. */ }
+    }
+    res.json({ task, attempt, attempts, ...(output ? { output } : {}), contract: { projectId: task.projectId, taskId: task.id, attemptId: attempt?.id, deepLink } });
   }));
 
   router.post('/:id/message', asyncHandler(async (req: Request, res: Response) => {

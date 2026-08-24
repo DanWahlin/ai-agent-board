@@ -7,7 +7,7 @@ import { SqliteTaskRepository } from '../src/repositories/sqlite.js';
 import { PostgresTaskRepository } from '../src/repositories/postgres.js';
 import { migrateSqliteDatabase } from '../src/db.js';
 import { createTaskRouter } from '../src/routes/tasks.js';
-import { createOrchestrationsRouter } from '../src/routes/orchestrations.js';
+import { createOrchestrationsRouter, extractOrchestrationOutput } from '../src/routes/orchestrations.js';
 import type { Task, Project, ExecutionAttempt } from '../src/types.js';
 import type { ProjectRepository } from '../src/repositories/project-types.js';
 import type { AgentManager } from '../src/services/agent-manager.js';
@@ -61,6 +61,39 @@ const agents = {
   sendMessage: async () => false,
   startAgent: () => undefined,
 } as unknown as AgentManager;
+
+test('orchestration output reconstructs full agent prose and removes transport summaries', () => {
+  const output = extractOrchestrationOutput([
+    { id: '1', taskId: 'task-1', type: 'output', content: 'Git worktree created at /tmp/worktree\nBranch: agent/test\nBase: main', timestamp: 1 },
+    { id: '2', taskId: 'task-1', type: 'output', content: 'Phoenix is **90°F**', timestamp: 2 },
+    { id: '3', taskId: 'task-1', type: 'output', content: ' with blowing dust.\n\n', timestamp: 3 },
+    { id: '4', taskId: 'task-1', type: 'output', content: '<task-summary>## Completed\nRetrieved weather.\n## Remaining</task-summary>', timestamp: 4 },
+  ]);
+  assert.equal(output, 'Phoenix is **90°F** with blowing dust.');
+});
+
+test('orchestration read exposes full agent output separately from the compact summary', async () => {
+  const db = makeDb();
+  const repo = new SqliteTaskRepository(db);
+  try {
+    await repo.create({ ...task('full-output'), agentStatus: 'complete', columnId: 'review', completedAt: 10, summary: 'Compact summary' });
+    await repo.createAttemptIdempotent(attempt('full-output-attempt', 'full-output'));
+    const manager = {
+      ...agents,
+      getEvents: async () => [
+        { id: 'event-1', taskId: 'full-output', type: 'output', content: 'The **full answer**.', timestamp: 2 },
+        { id: 'event-2', taskId: 'full-output', type: 'output', content: '<task-summary>Compact summary</task-summary>', timestamp: 3 },
+      ],
+    } as unknown as AgentManager;
+    await withApi(repo, async (base) => {
+      const response = await fetch(`${base}/api/orchestrations/full-output`);
+      assert.equal(response.status, 200);
+      const body = await response.json() as { task: Task; output: string };
+      assert.equal(body.task.summary, 'Compact summary');
+      assert.equal(body.output, 'The **full answer**.');
+    }, manager);
+  } finally { db.close(); }
+});
 
 async function withApi(repo: SqliteTaskRepository, run: (base: string) => Promise<void>, manager: AgentManager = agents, projectRepo: ProjectRepository = projects) {
   const app = express();

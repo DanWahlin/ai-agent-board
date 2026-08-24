@@ -129,7 +129,7 @@ export class SqliteTaskRepository implements TaskRepository {
         INSERT INTO events (id, task_id, type, content, timestamp, metadata)
         VALUES (@id, @task_id, @type, @content, @timestamp, @metadata)
       `),
-      getEventsByTaskId: db.prepare('SELECT * FROM events WHERE task_id = ? ORDER BY timestamp ASC'),
+      getEventsByTaskId: db.prepare('SELECT * FROM events WHERE task_id = ? ORDER BY timestamp ASC, rowid ASC'),
       deleteEventsByTaskId: db.prepare('DELETE FROM events WHERE task_id = ?'),
     };
   }

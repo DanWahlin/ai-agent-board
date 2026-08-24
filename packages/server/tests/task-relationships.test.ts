@@ -72,6 +72,17 @@ test('orchestration output reconstructs full agent prose and removes transport s
   assert.equal(output, 'Phoenix is **90°F** with blowing dust.');
 });
 
+test('persisted event fragments retain insertion order when timestamps collide', async () => {
+  const db = makeDb();
+  const repo = new SqliteTaskRepository(db);
+  try {
+    await repo.create(task('event-order'));
+    await repo.insertEvent({ id: 'z', taskId: 'event-order', type: 'output', content: '90', timestamp: 10 });
+    await repo.insertEvent({ id: 'a', taskId: 'event-order', type: 'output', content: '°F', timestamp: 10 });
+    assert.equal((await repo.getEventsByTaskId('event-order')).map((event) => event.content).join(''), '90°F');
+  } finally { db.close(); }
+});
+
 test('orchestration read exposes full agent output separately from the compact summary', async () => {
   const db = makeDb();
   const repo = new SqliteTaskRepository(db);

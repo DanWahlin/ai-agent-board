@@ -259,7 +259,7 @@ export class PostgresTaskRepository implements TaskRepository {
       timestamp: string;
       metadata: string | null;
     }>(
-      'SELECT * FROM events WHERE task_id = $1 ORDER BY timestamp ASC',
+      'SELECT * FROM events WHERE task_id = $1 ORDER BY timestamp ASC, ctid ASC',
       [taskId]
     );
     return rows.map((row) => {

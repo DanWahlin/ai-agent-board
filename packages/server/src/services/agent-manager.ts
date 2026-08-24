@@ -51,6 +51,13 @@ const STOPPED_TASK_TTL_MS = 30_000;
 // Upper bound on accumulated assistant prose kept for summary extraction.
 // We only need the tail (the final <task-summary> block), so cap memory use.
 const MAX_SUMMARY_BUFFER = 64_000;
+const MAX_RESULT_BUFFER = 512 * 1024;
+
+function extractFullAgentOutput(buffer: string): string | null {
+  const summaryStart = buffer.lastIndexOf('<task-summary>');
+  const body = (summaryStart >= 0 ? buffer.slice(0, summaryStart) : buffer).trim();
+  return body || null;
+}
 
 /**
  * Extract the agent-authored task summary from accumulated assistant prose.
@@ -607,8 +614,10 @@ Optional list of any work you did not complete or that should be followed up. Om
         let lastFileEventType: string | null = null;
 
         // Accumulate assistant prose ('output' events) to extract the agent's
-        // end-of-task <task-summary> marker block after completion.
+        // end-of-task <task-summary> marker block after completion and persist
+        // the complete answer for service integrations.
         let summaryBuffer = '';
+        let resultBuffer = '';
 
         const session = await provider.createSession({
           contextId: task.id,
@@ -624,6 +633,10 @@ Optional list of any work you did not complete or that should be followed up. Om
             // the literal sentinel tags so they don't render in the Events tab.
             if (coreEvent.type === 'output') {
               summaryBuffer += content;
+              resultBuffer += content;
+              if (resultBuffer.length > MAX_RESULT_BUFFER) {
+                resultBuffer = `[Earlier agent output omitted because it exceeded ${MAX_RESULT_BUFFER} characters.]\n\n${resultBuffer.slice(-MAX_RESULT_BUFFER)}`;
+              }
               if (summaryBuffer.length > MAX_SUMMARY_BUFFER) {
                 summaryBuffer = summaryBuffer.slice(-MAX_SUMMARY_BUFFER);
               }
@@ -751,8 +764,15 @@ Optional list of any work you did not complete or that should be followed up. Om
             try {
               const summary = extractTaskSummary(summaryBuffer);
               await this.eventRepo?.update(task.id, { summary });
+              const fullOutput = extractFullAgentOutput(resultBuffer);
+              if (fullOutput && this.eventRepo) {
+                await this.eventRepo.insertEvent({
+                  id: uuid(), taskId: task.id, type: 'complete', content: fullOutput,
+                  timestamp: Date.now(), metadata: { finalOutput: true },
+                });
+              }
             } catch (err) {
-              console.error(`[agent-manager] failed to persist summary for task ${task.id}:`, errorMessage(err));
+              console.error(`[agent-manager] failed to persist result for task ${task.id}:`, errorMessage(err));
             }
           }
           terminateOnce(result.status, result.error);

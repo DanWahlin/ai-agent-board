@@ -24,6 +24,11 @@ import {
 const MAX_ORCHESTRATION_OUTPUT = 512 * 1024;
 
 export function extractOrchestrationOutput(events: AgentEvent[]): string | undefined {
+  const finalOutput = [...events].reverse().find((event) => event.type === 'complete' && event.metadata?.finalOutput === true)?.content.trim();
+  if (finalOutput) return finalOutput.length <= MAX_ORCHESTRATION_OUTPUT
+    ? finalOutput
+    : `[Earlier agent output omitted because it exceeded ${MAX_ORCHESTRATION_OUTPUT} characters.]\n\n${finalOutput.slice(-MAX_ORCHESTRATION_OUTPUT)}`;
+
   let output = events
     .filter((event) => event.type === 'output' && !event.content.startsWith('Git worktree created at '))
     .map((event) => event.content)

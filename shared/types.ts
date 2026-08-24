@@ -187,6 +187,8 @@ export interface AgentEvent {
     agentType?: AgentType;
     duration?: number;
     error?: string;
+    /** Persisted, complete assistant prose used by service integrations. */
+    finalOutput?: boolean;
   };
 }
 

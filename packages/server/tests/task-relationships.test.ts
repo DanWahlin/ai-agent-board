@@ -72,6 +72,15 @@ test('orchestration output reconstructs full agent prose and removes transport s
   assert.equal(output, 'Phoenix is **90°F** with blowing dust.');
 });
 
+test('persisted final output wins over timestamp-collided stream fragments', () => {
+  const output = extractOrchestrationOutput([
+    { id: '1', taskId: 'task-1', type: 'output', content: '°F', timestamp: 1 },
+    { id: '2', taskId: 'task-1', type: 'output', content: '90', timestamp: 1 },
+    { id: '3', taskId: 'task-1', type: 'complete', content: 'Phoenix is **90°F**.', timestamp: 2, metadata: { finalOutput: true } },
+  ]);
+  assert.equal(output, 'Phoenix is **90°F**.');
+});
+
 test('persisted event fragments retain insertion order when timestamps collide', async () => {
   const db = makeDb();
   const repo = new SqliteTaskRepository(db);

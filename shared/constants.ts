@@ -54,14 +54,27 @@ export const VALID_CONVERSATION_MESSAGE_ROLES: readonly ConversationMessageRole[
 export const VALID_CONVERSATION_MESSAGE_KINDS: readonly ConversationMessageKind[] = ['speech_final', 'typed'] as const;
 
 export const MAX_CONVERSATION_TITLE_LENGTH = 200;
-export const MAX_CONVERSATION_MESSAGE_LENGTH = 32000;
+export const MAX_CONVERSATION_MESSAGE_LENGTH = 2000;
 export const MAX_CONVERSATION_SUMMARY_LENGTH = 8000;
 export const MAX_MESSAGES_PER_APPEND = 50;
 export const MAX_MESSAGES_PAGE_SIZE = 100;
 export const DEFAULT_MESSAGES_PAGE_SIZE = 50;
-export const VOICE_CLAIM_TTL_MS = 120_000; // 2 minutes
+export const VOICE_CLAIM_MIN_TTL_MS = 5_000; // 5 seconds
+export const VOICE_CLAIM_MAX_TTL_MS = 300_000; // 5 minutes
+export const VOICE_CLAIM_TTL_MS = 120_000; // 2 minutes default
 export const MAX_CONVERSATIONS_PAGE_SIZE = 100;
 export const DEFAULT_CONVERSATIONS_PAGE_SIZE = 25;
+export const MAX_HYDRATION_TURNS = 24;
+export const MAX_HYDRATION_CHAR_PER_MSG = 2000;
+export const MAX_HYDRATION_TOTAL_BYTES = 16384; // 16 KiB
+export const MAX_PROVIDER_LENGTH = 64;
+export const MAX_MODEL_LENGTH = 128;
+export const MAX_SESSION_ID_LENGTH = 256;
+export const MAX_CAPABILITIES_LENGTH = 1024;
+export const MAX_END_REASON_LENGTH = 128;
+export const MAX_MESSAGE_ID_LENGTH = 128;
+export const MAX_ATTEMPT_ID_LENGTH = 128;
+export const MAX_SEARCH_QUERY_LENGTH = 200;
 
 export function isValidConversationState(value: unknown): value is ConversationState {
   return typeof value === 'string' && (VALID_CONVERSATION_STATES as readonly string[]).includes(value);

@@ -284,10 +284,11 @@ export function migrateSqliteDatabase(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS conversations (
       id TEXT PRIMARY KEY,
       principal_id TEXT NOT NULL,
-      title TEXT NOT NULL,
-      state TEXT NOT NULL DEFAULT 'active',
+      title TEXT NOT NULL CHECK(length(title) <= 200),
+      state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','archived','deleting','deleted')),
       preferred_project_id TEXT,
-      revision INTEGER NOT NULL DEFAULT 1,
+      revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+      request_hash TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       archived_at INTEGER,
@@ -296,16 +297,16 @@ export function migrateSqliteDatabase(db: Database.Database): void {
     )
   `);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_conversations_principal ON conversations(principal_id, state, created_at)`);
-  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_idempotency ON conversations(idempotency_key) WHERE idempotency_key IS NOT NULL`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_idempotency ON conversations(principal_id, idempotency_key) WHERE idempotency_key IS NOT NULL`);
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS conversation_messages (
       id TEXT PRIMARY KEY,
       conversation_id TEXT NOT NULL REFERENCES conversations(id),
-      seq INTEGER NOT NULL,
-      role TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      text TEXT NOT NULL,
+      seq INTEGER NOT NULL CHECK(seq >= 1),
+      role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+      kind TEXT NOT NULL CHECK(kind IN ('speech_final','typed')),
+      text TEXT NOT NULL CHECK(length(text) <= 2000),
       client_event_id TEXT,
       provider_type TEXT,
       provider_model TEXT,
@@ -322,9 +323,9 @@ export function migrateSqliteDatabase(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS conversation_summaries (
       conversation_id TEXT NOT NULL REFERENCES conversations(id),
-      version INTEGER NOT NULL,
-      through_seq INTEGER NOT NULL,
-      text TEXT NOT NULL,
+      version INTEGER NOT NULL CHECK(version >= 1),
+      through_seq INTEGER NOT NULL CHECK(through_seq >= 0),
+      text TEXT NOT NULL CHECK(length(text) <= 8000),
       model TEXT,
       policy TEXT,
       created_at INTEGER NOT NULL,
@@ -336,15 +337,15 @@ export function migrateSqliteDatabase(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS conversation_provider_sessions (
       conversation_id TEXT NOT NULL REFERENCES conversations(id),
-      epoch INTEGER NOT NULL,
-      provider TEXT NOT NULL,
-      model TEXT,
-      session_id TEXT,
-      capabilities TEXT,
+      epoch INTEGER NOT NULL CHECK(epoch >= 1),
+      provider TEXT NOT NULL CHECK(length(provider) <= 64),
+      model TEXT CHECK(model IS NULL OR length(model) <= 128),
+      session_id TEXT CHECK(session_id IS NULL OR length(session_id) <= 256),
+      capabilities TEXT CHECK(capabilities IS NULL OR length(capabilities) <= 1024),
       started_at INTEGER NOT NULL,
       ended_at INTEGER,
       expires_at INTEGER,
-      end_reason TEXT,
+      end_reason TEXT CHECK(end_reason IS NULL OR length(end_reason) <= 128),
       PRIMARY KEY(conversation_id, epoch)
     )
   `);
@@ -353,8 +354,8 @@ export function migrateSqliteDatabase(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS conversation_task_links (
       conversation_id TEXT NOT NULL REFERENCES conversations(id),
       task_id TEXT NOT NULL,
-      message_id TEXT,
-      attempt_id TEXT,
+      message_id TEXT CHECK(message_id IS NULL OR length(message_id) <= 128),
+      attempt_id TEXT CHECK(attempt_id IS NULL OR length(attempt_id) <= 128),
       created_at INTEGER NOT NULL,
       PRIMARY KEY(conversation_id, task_id)
     )
@@ -364,9 +365,38 @@ export function migrateSqliteDatabase(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS conversation_voice_claims (
       conversation_id TEXT PRIMARY KEY,
       principal_id TEXT NOT NULL,
-      epoch INTEGER NOT NULL,
+      epoch INTEGER NOT NULL CHECK(epoch >= 1),
       claimed_at INTEGER NOT NULL,
       expires_at INTEGER NOT NULL
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS conversation_epoch_fences (
+      conversation_id TEXT PRIMARY KEY REFERENCES conversations(id),
+      max_epoch INTEGER NOT NULL CHECK(max_epoch >= 1)
+    )
+  `);
+
+  // Idempotent migration: if old global-unique idempotency index exists, drop and recreate as principal-scoped
+  try {
+    const indices = db.prepare("SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='conversations' AND name='idx_conversations_idempotency'").all() as any[];
+    if (indices.length > 0 && indices[0].sql && !indices[0].sql.includes('principal_id')) {
+      db.exec('DROP INDEX IF EXISTS idx_conversations_idempotency');
+      db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_idempotency ON conversations(principal_id, idempotency_key) WHERE idempotency_key IS NOT NULL');
+    }
+  } catch { /* ignore if migration not needed */ }
+
+  // Add request_hash column if missing
+  try {
+    db.exec('ALTER TABLE conversations ADD COLUMN request_hash TEXT');
+  } catch { /* column already exists */ }
+
+  // Create epoch fences table if missing (covers upgrades from earlier schema)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS conversation_epoch_fences (
+      conversation_id TEXT PRIMARY KEY REFERENCES conversations(id),
+      max_epoch INTEGER NOT NULL CHECK(max_epoch >= 1)
     )
   `);
 }
@@ -804,10 +834,11 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
     CREATE TABLE IF NOT EXISTS conversations (
       id TEXT PRIMARY KEY,
       principal_id TEXT NOT NULL,
-      title TEXT NOT NULL,
-      state TEXT NOT NULL DEFAULT 'active',
+      title TEXT NOT NULL CHECK(length(title) <= 200),
+      state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','archived','deleting','deleted')),
       preferred_project_id TEXT,
-      revision INTEGER NOT NULL DEFAULT 1,
+      revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+      request_hash TEXT,
       created_at BIGINT NOT NULL,
       updated_at BIGINT NOT NULL,
       archived_at BIGINT,
@@ -816,16 +847,16 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
     )
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_conversations_principal ON conversations(principal_id, state, created_at)`);
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_idempotency ON conversations(idempotency_key) WHERE idempotency_key IS NOT NULL`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_idempotency ON conversations(principal_id, idempotency_key) WHERE idempotency_key IS NOT NULL`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS conversation_messages (
       id TEXT PRIMARY KEY,
       conversation_id TEXT NOT NULL REFERENCES conversations(id),
-      seq INTEGER NOT NULL,
-      role TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      text TEXT NOT NULL,
+      seq INTEGER NOT NULL CHECK(seq >= 1),
+      role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+      kind TEXT NOT NULL CHECK(kind IN ('speech_final','typed')),
+      text TEXT NOT NULL CHECK(length(text) <= 2000),
       client_event_id TEXT,
       provider_type TEXT,
       provider_model TEXT,
@@ -842,9 +873,9 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS conversation_summaries (
       conversation_id TEXT NOT NULL REFERENCES conversations(id),
-      version INTEGER NOT NULL,
-      through_seq INTEGER NOT NULL,
-      text TEXT NOT NULL,
+      version INTEGER NOT NULL CHECK(version >= 1),
+      through_seq INTEGER NOT NULL CHECK(through_seq >= 0),
+      text TEXT NOT NULL CHECK(length(text) <= 8000),
       model TEXT,
       policy TEXT,
       created_at BIGINT NOT NULL,
@@ -856,15 +887,15 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS conversation_provider_sessions (
       conversation_id TEXT NOT NULL REFERENCES conversations(id),
-      epoch INTEGER NOT NULL,
-      provider TEXT NOT NULL,
-      model TEXT,
-      session_id TEXT,
-      capabilities TEXT,
+      epoch INTEGER NOT NULL CHECK(epoch >= 1),
+      provider TEXT NOT NULL CHECK(length(provider) <= 64),
+      model TEXT CHECK(model IS NULL OR length(model) <= 128),
+      session_id TEXT CHECK(session_id IS NULL OR length(session_id) <= 256),
+      capabilities TEXT CHECK(capabilities IS NULL OR length(capabilities) <= 1024),
       started_at BIGINT NOT NULL,
       ended_at BIGINT,
       expires_at BIGINT,
-      end_reason TEXT,
+      end_reason TEXT CHECK(end_reason IS NULL OR length(end_reason) <= 128),
       PRIMARY KEY(conversation_id, epoch)
     )
   `);
@@ -873,8 +904,8 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
     CREATE TABLE IF NOT EXISTS conversation_task_links (
       conversation_id TEXT NOT NULL REFERENCES conversations(id),
       task_id TEXT NOT NULL,
-      message_id TEXT,
-      attempt_id TEXT,
+      message_id TEXT CHECK(message_id IS NULL OR length(message_id) <= 128),
+      attempt_id TEXT CHECK(attempt_id IS NULL OR length(attempt_id) <= 128),
       created_at BIGINT NOT NULL,
       PRIMARY KEY(conversation_id, task_id)
     )
@@ -884,11 +915,34 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
     CREATE TABLE IF NOT EXISTS conversation_voice_claims (
       conversation_id TEXT PRIMARY KEY,
       principal_id TEXT NOT NULL,
-      epoch INTEGER NOT NULL,
+      epoch INTEGER NOT NULL CHECK(epoch >= 1),
       claimed_at BIGINT NOT NULL,
       expires_at BIGINT NOT NULL
     )
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS conversation_epoch_fences (
+      conversation_id TEXT PRIMARY KEY REFERENCES conversations(id),
+      max_epoch INTEGER NOT NULL CHECK(max_epoch >= 1)
+    )
+  `);
+
+  // Idempotent migration: if old global-unique idempotency index exists, recreate as principal-scoped
+  try {
+    const { rows: idxRows } = await pool.query(`
+      SELECT indexdef FROM pg_indexes WHERE tablename = 'conversations' AND indexname = 'idx_conversations_idempotency'
+    `);
+    if (idxRows.length > 0 && !idxRows[0].indexdef.includes('principal_id')) {
+      await pool.query('DROP INDEX IF EXISTS idx_conversations_idempotency');
+      await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_idempotency ON conversations(principal_id, idempotency_key) WHERE idempotency_key IS NOT NULL');
+    }
+  } catch { /* ignore if migration not needed */ }
+
+  // Add request_hash column if missing
+  try {
+    await pool.query('ALTER TABLE conversations ADD COLUMN IF NOT EXISTS request_hash TEXT');
+  } catch { /* column already exists */ }
 
   // Migrate existing FK to ON DELETE CASCADE if not already set
   const { rows: fkRows } = await pool.query(`

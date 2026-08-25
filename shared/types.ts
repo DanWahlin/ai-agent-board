@@ -259,6 +259,7 @@ export interface Conversation {
   state: ConversationState;
   preferredProjectId?: string;
   revision: number;
+  requestHash?: string;
   createdAt: number;
   updatedAt: number;
   archivedAt?: number;
@@ -319,4 +320,9 @@ export interface ConversationVoiceClaim {
   epoch: number;
   claimedAt: number;
   expiresAt: number;
+}
+
+export interface ConversationEpochFence {
+  conversationId: string;
+  maxEpoch: number;
 }

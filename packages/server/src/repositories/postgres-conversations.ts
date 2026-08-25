@@ -5,6 +5,9 @@ import type {
   MessagePage,
   AppendResult,
   HydrationResult,
+  SearchResult,
+  DeleteResult,
+  CreateConflict,
 } from './conversation-types.js';
 import type {
   Conversation,
@@ -19,6 +22,10 @@ import {
   DEFAULT_MESSAGES_PAGE_SIZE,
   MAX_CONVERSATIONS_PAGE_SIZE,
   DEFAULT_CONVERSATIONS_PAGE_SIZE,
+  MAX_HYDRATION_TURNS,
+  MAX_HYDRATION_CHAR_PER_MSG,
+  MAX_HYDRATION_TOTAL_BYTES,
+  VOICE_CLAIM_MAX_TTL_MS,
 } from '@ai-agent-board/shared/constants.js';
 
 function encodeConversationCursor(createdAt: number, id: string): string {
@@ -31,9 +38,7 @@ function decodeConversationCursor(cursor: string): { createdAt: number; id: stri
     if (typeof parsed.createdAt === 'number' && Number.isFinite(parsed.createdAt) && typeof parsed.id === 'string' && parsed.id) {
       return { createdAt: parsed.createdAt, id: parsed.id };
     }
-  } catch {
-    // ignore invalid cursor
-  }
+  } catch { /* ignore */ }
   return undefined;
 }
 
@@ -41,9 +46,7 @@ function decodeSeqCursor(cursor: string): number | undefined {
   try {
     const decoded = Number.parseInt(Buffer.from(cursor, 'base64url').toString(), 10);
     return Number.isInteger(decoded) && decoded >= 0 ? decoded : undefined;
-  } catch {
-    return undefined;
-  }
+  } catch { return undefined; }
 }
 
 export class PostgresConversationRepository implements ConversationRepository {
@@ -57,6 +60,7 @@ export class PostgresConversationRepository implements ConversationRepository {
       state: row.state,
       preferredProjectId: row.preferred_project_id ?? undefined,
       revision: row.revision,
+      requestHash: row.request_hash ?? undefined,
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
       archivedAt: row.archived_at != null ? Number(row.archived_at) : undefined,
@@ -130,33 +134,68 @@ export class PostgresConversationRepository implements ConversationRepository {
     };
   }
 
-  async create(conversation: Conversation, idempotencyKey?: string): Promise<{ conversation: Conversation; created: boolean }> {
-    if (idempotencyKey) {
-      const { rows } = await this.pool.query(
-        'SELECT * FROM conversations WHERE idempotency_key = $1 AND principal_id = $2',
-        [idempotencyKey, conversation.principalId],
-      );
-      if (rows.length > 0) {
-        return { conversation: this.rowToConversation(rows[0]), created: false };
+  async create(
+    conversation: Conversation,
+    idempotencyKey?: string,
+    requestHash?: string,
+  ): Promise<{ conversation: Conversation; created: boolean; conflict?: CreateConflict }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      if (idempotencyKey) {
+        const { rows } = await client.query(
+          'SELECT * FROM conversations WHERE idempotency_key = $1 AND principal_id = $2 FOR SHARE',
+          [idempotencyKey, conversation.principalId],
+        );
+        if (rows.length > 0) {
+          await client.query('COMMIT');
+          const existing = this.rowToConversation(rows[0]);
+          if (requestHash && rows[0].request_hash && rows[0].request_hash !== requestHash) {
+            return { conversation: existing, created: false, conflict: 'IDEMPOTENCY_PAYLOAD_CONFLICT' };
+          }
+          return { conversation: existing, created: false };
+        }
       }
+
+      await client.query(`
+        INSERT INTO conversations (id, principal_id, title, state, preferred_project_id, revision, request_hash, created_at, updated_at, idempotency_key)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `, [
+        conversation.id,
+        conversation.principalId,
+        conversation.title,
+        conversation.state,
+        conversation.preferredProjectId ?? null,
+        conversation.revision,
+        requestHash ?? null,
+        conversation.createdAt,
+        conversation.updatedAt,
+        idempotencyKey ?? null,
+      ]);
+
+      await client.query('COMMIT');
+      return { conversation: { ...conversation, requestHash }, created: true };
+    } catch (err: any) {
+      await client.query('ROLLBACK');
+      // Handle unique constraint violation on idempotency key (race condition)
+      if (err.code === '23505' && err.constraint?.includes('idempotency')) {
+        const { rows } = await this.pool.query(
+          'SELECT * FROM conversations WHERE idempotency_key = $1 AND principal_id = $2',
+          [idempotencyKey, conversation.principalId],
+        );
+        if (rows.length > 0) {
+          const existing = this.rowToConversation(rows[0]);
+          if (requestHash && rows[0].request_hash && rows[0].request_hash !== requestHash) {
+            return { conversation: existing, created: false, conflict: 'IDEMPOTENCY_PAYLOAD_CONFLICT' };
+          }
+          return { conversation: existing, created: false };
+        }
+      }
+      throw err;
+    } finally {
+      client.release();
     }
-
-    await this.pool.query(`
-      INSERT INTO conversations (id, principal_id, title, state, preferred_project_id, revision, created_at, updated_at, idempotency_key)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-    `, [
-      conversation.id,
-      conversation.principalId,
-      conversation.title,
-      conversation.state,
-      conversation.preferredProjectId ?? null,
-      conversation.revision,
-      conversation.createdAt,
-      conversation.updatedAt,
-      idempotencyKey ?? null,
-    ]);
-
-    return { conversation, created: true };
   }
 
   async getById(id: string, principalId: string): Promise<Conversation | undefined> {
@@ -198,7 +237,42 @@ export class PostgresConversationRepository implements ConversationRepository {
     return { conversations, cursor: nextCursor, hasMore };
   }
 
-  async update(id: string, principalId: string, revision: number, updates: Partial<Pick<Conversation, 'title' | 'state' | 'preferredProjectId'>>): Promise<Conversation | undefined> {
+  async search(principalId: string, query: string, options: { cursor?: string; limit?: number }): Promise<SearchResult> {
+    const limit = Math.min(options.limit ?? DEFAULT_CONVERSATIONS_PAGE_SIZE, MAX_CONVERSATIONS_PAGE_SIZE);
+    const pattern = `%${query}%`;
+    let sql = `SELECT DISTINCT c.* FROM conversations c
+      LEFT JOIN conversation_messages m ON m.conversation_id = c.id
+      WHERE c.principal_id = $1 AND c.state != 'deleted'
+        AND (c.title ILIKE $2 OR m.text ILIKE $3)`;
+    const params: any[] = [principalId, pattern, pattern];
+    let paramIdx = 4;
+
+    const cursor = options.cursor ? decodeConversationCursor(options.cursor) : undefined;
+    if (cursor) {
+      sql += ` AND (c.created_at < $${paramIdx} OR (c.created_at = $${paramIdx} AND c.id < $${paramIdx + 1}))`;
+      params.push(cursor.createdAt, cursor.id);
+      paramIdx += 2;
+    }
+
+    sql += ` ORDER BY c.created_at DESC, c.id DESC LIMIT $${paramIdx}`;
+    params.push(limit + 1);
+
+    const { rows } = await this.pool.query(sql, params);
+    const hasMore = rows.length > limit;
+    const conversations = rows.slice(0, limit).map((row: any) => this.rowToConversation(row));
+    const nextCursor = hasMore && conversations.length > 0
+      ? encodeConversationCursor(conversations[conversations.length - 1].createdAt, conversations[conversations.length - 1].id)
+      : undefined;
+
+    return { conversations, cursor: nextCursor, hasMore };
+  }
+
+  async update(
+    id: string,
+    principalId: string,
+    revision: number,
+    updates: Partial<Pick<Conversation, 'title' | 'state' | 'preferredProjectId'>>,
+  ): Promise<Conversation | undefined> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -209,6 +283,14 @@ export class PostgresConversationRepository implements ConversationRepository {
       if (!existing || existing.revision !== revision) {
         await client.query('ROLLBACK');
         return undefined;
+      }
+
+      // Validate state transition
+      if (updates.state) {
+        const from = existing.state;
+        const to = updates.state;
+        if (from === 'active' && to !== 'archived') { await client.query('ROLLBACK'); return undefined; }
+        if (from === 'archived' && to !== 'active') { await client.query('ROLLBACK'); return undefined; }
       }
 
       const now = Date.now();
@@ -242,7 +324,7 @@ export class PostgresConversationRepository implements ConversationRepository {
     }
   }
 
-  async delete(id: string, principalId: string, revision: number): Promise<boolean> {
+  async delete(id: string, principalId: string, revision: number): Promise<DeleteResult> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -250,9 +332,13 @@ export class PostgresConversationRepository implements ConversationRepository {
         'SELECT * FROM conversations WHERE id = $1 AND principal_id = $2 FOR UPDATE',
         [id, principalId],
       );
-      if (!existing || existing.state === 'deleted' || existing.revision !== revision) {
+      if (!existing || existing.state === 'deleted') {
         await client.query('ROLLBACK');
-        return false;
+        return 'not_found';
+      }
+      if (existing.revision !== revision) {
+        await client.query('ROLLBACK');
+        return 'revision_conflict';
       }
 
       const now = Date.now();
@@ -268,7 +354,7 @@ export class PostgresConversationRepository implements ConversationRepository {
       await client.query('DELETE FROM conversation_task_links WHERE conversation_id = $1', [id]);
 
       await client.query('COMMIT');
-      return true;
+      return 'deleted';
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -322,20 +408,23 @@ export class PostgresConversationRepository implements ConversationRepository {
         throw new Error('CONVERSATION_NOT_ACTIVE');
       }
 
+      // Require a current, unexpired claim with exact epoch
       const { rows: claimRows } = await client.query(
-        'SELECT * FROM conversation_voice_claims WHERE conversation_id = $1 AND principal_id = $2',
-        [conversationId, principalId],
+        'SELECT * FROM conversation_voice_claims WHERE conversation_id = $1',
+        [conversationId],
       );
-      if (claimRows.length > 0) {
-        const claim = claimRows[0];
-        if (claim.epoch !== epoch) {
-          await client.query('ROLLBACK');
-          throw new Error('STALE_EPOCH');
-        }
-        if (Number(claim.expires_at) < Date.now()) {
-          await client.query('ROLLBACK');
-          throw new Error('CLAIM_EXPIRED');
-        }
+      if (claimRows.length === 0 || claimRows[0].principal_id !== principalId) {
+        await client.query('ROLLBACK');
+        throw new Error('NO_VOICE_CLAIM');
+      }
+      const claim = claimRows[0];
+      if (Number(claim.epoch) !== epoch) {
+        await client.query('ROLLBACK');
+        throw new Error('STALE_EPOCH');
+      }
+      if (Number(claim.expires_at) < Date.now()) {
+        await client.query('ROLLBACK');
+        throw new Error('CLAIM_EXPIRED');
       }
 
       const now = Date.now();
@@ -352,6 +441,11 @@ export class PostgresConversationRepository implements ConversationRepository {
             [conversationId, msg.clientEventId],
           );
           if (existing.length > 0) {
+            // Compare immutable fields for conflict detection
+            if (existing[0].role !== msg.role || existing[0].kind !== msg.kind || existing[0].text !== msg.text) {
+              await client.query('ROLLBACK');
+              throw new Error('CLIENT_EVENT_CONFLICT');
+            }
             result.push(this.rowToMessage(existing[0]));
             continue;
           }
@@ -414,37 +508,79 @@ export class PostgresConversationRepository implements ConversationRepository {
     const summary = summaryRows.length > 0 ? this.rowToSummary(summaryRows[0]) : undefined;
     const afterSeq = summary?.throughSeq ?? 0;
 
+    // Bounded: at most MAX_HYDRATION_TURNS final user/assistant turns (fetch in reverse, then reverse back)
     const { rows: msgRows } = await this.pool.query(
       `SELECT * FROM conversation_messages WHERE conversation_id = $1 AND seq > $2
        AND role IN ('user', 'assistant') AND kind IN ('speech_final', 'typed')
-       ORDER BY seq ASC LIMIT $3`,
-      [conversationId, afterSeq, MAX_MESSAGES_PAGE_SIZE],
+       ORDER BY seq DESC LIMIT $3`,
+      [conversationId, afterSeq, MAX_HYDRATION_TURNS],
     );
 
-    return {
-      summary,
-      messages: msgRows.map((row: any) => this.rowToMessage(row)),
-    };
+    msgRows.reverse();
+    const messages: ConversationMessage[] = [];
+    let totalBytes = 0;
+    for (const row of msgRows) {
+      const msg = this.rowToMessage(row);
+      if (msg.text.length > MAX_HYDRATION_CHAR_PER_MSG) {
+        msg.text = msg.text.slice(0, MAX_HYDRATION_CHAR_PER_MSG);
+      }
+      const encoded = Buffer.byteLength(JSON.stringify(msg), 'utf8');
+      if (totalBytes + encoded > MAX_HYDRATION_TOTAL_BYTES) break;
+      totalBytes += encoded;
+      messages.push(msg);
+    }
+
+    return { summary, messages };
   }
 
-  async upsertSummary(summary: ConversationSummary): Promise<ConversationSummary> {
-    const now = Date.now();
-    await this.pool.query(`
-      INSERT INTO conversation_summaries (conversation_id, version, through_seq, text, model, policy, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-      ON CONFLICT(conversation_id, version)
-      DO UPDATE SET through_seq = excluded.through_seq, text = excluded.text, model = excluded.model, policy = excluded.policy, updated_at = excluded.updated_at
-    `, [
-      summary.conversationId,
-      summary.version,
-      summary.throughSeq,
-      summary.text,
-      summary.model ?? null,
-      summary.policy ?? null,
-      summary.createdAt,
-      now,
-    ]);
-    return { ...summary, updatedAt: now };
+  async upsertSummary(
+    conversationId: string,
+    principalId: string,
+    epoch: number,
+    summary: ConversationSummary,
+  ): Promise<ConversationSummary> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const { rows: [conv] } = await client.query(
+        'SELECT * FROM conversations WHERE id = $1 AND principal_id = $2 AND state = $3 FOR UPDATE',
+        [conversationId, principalId, 'active'],
+      );
+      if (!conv) { await client.query('ROLLBACK'); throw new Error('CONVERSATION_NOT_ACTIVE'); }
+
+      const { rows: claimRows } = await client.query(
+        'SELECT * FROM conversation_voice_claims WHERE conversation_id = $1 AND principal_id = $2 AND epoch = $3',
+        [conversationId, principalId, epoch],
+      );
+      if (claimRows.length === 0) { await client.query('ROLLBACK'); throw new Error('NO_VOICE_CLAIM'); }
+      if (Number(claimRows[0].expires_at) < Date.now()) { await client.query('ROLLBACK'); throw new Error('CLAIM_EXPIRED'); }
+
+      const now = Date.now();
+      await client.query(`
+        INSERT INTO conversation_summaries (conversation_id, version, through_seq, text, model, policy, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT(conversation_id, version)
+        DO UPDATE SET through_seq = excluded.through_seq, text = excluded.text, model = excluded.model, policy = excluded.policy, updated_at = excluded.updated_at
+      `, [
+        summary.conversationId,
+        summary.version,
+        summary.throughSeq,
+        summary.text,
+        summary.model ?? null,
+        summary.policy ?? null,
+        summary.createdAt,
+        now,
+      ]);
+
+      await client.query('COMMIT');
+      return { ...summary, updatedAt: now };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async getSummary(conversationId: string, principalId: string): Promise<ConversationSummary | undefined> {
@@ -462,6 +598,7 @@ export class PostgresConversationRepository implements ConversationRepository {
   }
 
   async acquireVoiceClaim(conversationId: string, principalId: string, epoch: number, ttlMs: number): Promise<ConversationVoiceClaim | undefined> {
+    const boundedTtl = Math.min(ttlMs, VOICE_CLAIM_MAX_TTL_MS);
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -475,24 +612,44 @@ export class PostgresConversationRepository implements ConversationRepository {
       }
 
       const now = Date.now();
+
+      // Check epoch fence
+      const { rows: fenceRows } = await client.query(
+        'SELECT max_epoch FROM conversation_epoch_fences WHERE conversation_id = $1 FOR UPDATE',
+        [conversationId],
+      );
+      if (fenceRows.length > 0 && epoch <= fenceRows[0].max_epoch) {
+        await client.query('ROLLBACK');
+        return undefined;
+      }
+
       const { rows: existingRows } = await client.query(
         'SELECT * FROM conversation_voice_claims WHERE conversation_id = $1 FOR UPDATE',
         [conversationId],
       );
       if (existingRows.length > 0) {
         const existing = existingRows[0];
-        if (Number(existing.expires_at) > now && existing.epoch >= epoch) {
+        // Require strictly higher epoch for takeover (even if expired)
+        if (epoch <= existing.epoch) {
           await client.query('ROLLBACK');
           return undefined;
         }
         await client.query('DELETE FROM conversation_voice_claims WHERE conversation_id = $1', [conversationId]);
       }
 
-      const expiresAt = now + ttlMs;
+      const expiresAt = now + boundedTtl;
       await client.query(`
         INSERT INTO conversation_voice_claims (conversation_id, principal_id, epoch, claimed_at, expires_at)
         VALUES ($1, $2, $3, $4, $5)
       `, [conversationId, principalId, epoch, now, expiresAt]);
+
+      // Update epoch fence
+      await client.query(`
+        INSERT INTO conversation_epoch_fences (conversation_id, max_epoch)
+        VALUES ($1, $2)
+        ON CONFLICT(conversation_id)
+        DO UPDATE SET max_epoch = excluded.max_epoch WHERE excluded.max_epoch > conversation_epoch_fences.max_epoch
+      `, [conversationId, epoch]);
 
       await client.query('COMMIT');
       return { conversationId, principalId, epoch, claimedAt: now, expiresAt };
@@ -520,30 +677,82 @@ export class PostgresConversationRepository implements ConversationRepository {
     return rows.length > 0 ? this.rowToVoiceClaim(rows[0]) : undefined;
   }
 
-  async beginProviderSession(session: ConversationProviderSession): Promise<ConversationProviderSession> {
-    await this.pool.query(`
-      INSERT INTO conversation_provider_sessions (
-        conversation_id, epoch, provider, model, session_id, capabilities, started_at, expires_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-    `, [
-      session.conversationId,
-      session.epoch,
-      session.provider,
-      session.model ?? null,
-      session.sessionId ?? null,
-      session.capabilities ?? null,
-      session.startedAt,
-      session.expiresAt ?? null,
-    ]);
-    return session;
+  async beginProviderSession(
+    conversationId: string,
+    principalId: string,
+    epoch: number,
+    session: Omit<ConversationProviderSession, 'conversationId' | 'epoch'>,
+  ): Promise<ConversationProviderSession> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const { rows: [conv] } = await client.query(
+        'SELECT * FROM conversations WHERE id = $1 AND principal_id = $2 AND state = $3 FOR UPDATE',
+        [conversationId, principalId, 'active'],
+      );
+      if (!conv) { await client.query('ROLLBACK'); throw new Error('CONVERSATION_NOT_ACTIVE'); }
+
+      const { rows: claimRows } = await client.query(
+        'SELECT * FROM conversation_voice_claims WHERE conversation_id = $1 AND principal_id = $2 AND epoch = $3',
+        [conversationId, principalId, epoch],
+      );
+      if (claimRows.length === 0) { await client.query('ROLLBACK'); throw new Error('NO_VOICE_CLAIM'); }
+      if (Number(claimRows[0].expires_at) < Date.now()) { await client.query('ROLLBACK'); throw new Error('CLAIM_EXPIRED'); }
+
+      await client.query(`
+        INSERT INTO conversation_provider_sessions (
+          conversation_id, epoch, provider, model, session_id, capabilities, started_at, expires_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `, [
+        conversationId,
+        epoch,
+        session.provider,
+        session.model ?? null,
+        session.sessionId ?? null,
+        session.capabilities ?? null,
+        session.startedAt,
+        session.expiresAt ?? null,
+      ]);
+
+      await client.query('COMMIT');
+      return { conversationId, epoch, ...session };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
-  async finishProviderSession(conversationId: string, epoch: number, endedAt: number, endReason: string): Promise<boolean> {
-    const result = await this.pool.query(
-      'UPDATE conversation_provider_sessions SET ended_at = $1, end_reason = $2 WHERE conversation_id = $3 AND epoch = $4 AND ended_at IS NULL',
-      [endedAt, endReason, conversationId, epoch],
-    );
-    return (result.rowCount ?? 0) > 0;
+  async finishProviderSession(
+    conversationId: string,
+    principalId: string,
+    epoch: number,
+    endedAt: number,
+    endReason: string,
+  ): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows: [conv] } = await client.query(
+        'SELECT id FROM conversations WHERE id = $1 AND principal_id = $2 AND state != $3',
+        [conversationId, principalId, 'deleted'],
+      );
+      if (!conv) { await client.query('ROLLBACK'); return false; }
+
+      const result = await client.query(
+        'UPDATE conversation_provider_sessions SET ended_at = $1, end_reason = $2 WHERE conversation_id = $3 AND epoch = $4 AND ended_at IS NULL',
+        [endedAt, endReason, conversationId, epoch],
+      );
+      await client.query('COMMIT');
+      return (result.rowCount ?? 0) > 0;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async getProviderSessions(conversationId: string, principalId: string): Promise<ConversationProviderSession[]> {
@@ -560,19 +769,42 @@ export class PostgresConversationRepository implements ConversationRepository {
     return rows.map((row: any) => this.rowToProviderSession(row));
   }
 
-  async linkTask(link: ConversationTaskLink): Promise<{ link: ConversationTaskLink; created: boolean }> {
-    const { rows } = await this.pool.query(
-      'SELECT * FROM conversation_task_links WHERE conversation_id = $1 AND task_id = $2',
-      [link.conversationId, link.taskId],
-    );
-    if (rows.length > 0) return { link: this.rowToTaskLink(rows[0]), created: false };
+  async linkTask(
+    conversationId: string,
+    principalId: string,
+    link: ConversationTaskLink,
+  ): Promise<{ link: ConversationTaskLink; created: boolean }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows: [conv] } = await client.query(
+        'SELECT id FROM conversations WHERE id = $1 AND principal_id = $2 AND state != $3',
+        [conversationId, principalId, 'deleted'],
+      );
+      if (!conv) { await client.query('ROLLBACK'); throw new Error('CONVERSATION_NOT_ACTIVE'); }
 
-    await this.pool.query(`
-      INSERT INTO conversation_task_links (conversation_id, task_id, message_id, attempt_id, created_at)
-      VALUES ($1, $2, $3, $4, $5)
-    `, [link.conversationId, link.taskId, link.messageId ?? null, link.attemptId ?? null, link.createdAt]);
+      const { rows } = await client.query(
+        'SELECT * FROM conversation_task_links WHERE conversation_id = $1 AND task_id = $2',
+        [link.conversationId, link.taskId],
+      );
+      if (rows.length > 0) {
+        await client.query('COMMIT');
+        return { link: this.rowToTaskLink(rows[0]), created: false };
+      }
 
-    return { link, created: true };
+      await client.query(`
+        INSERT INTO conversation_task_links (conversation_id, task_id, message_id, attempt_id, created_at)
+        VALUES ($1, $2, $3, $4, $5)
+      `, [link.conversationId, link.taskId, link.messageId ?? null, link.attemptId ?? null, link.createdAt]);
+
+      await client.query('COMMIT');
+      return { link, created: true };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async getLinkedTasks(conversationId: string, principalId: string): Promise<ConversationTaskLink[]> {

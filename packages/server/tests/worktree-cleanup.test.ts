@@ -7,7 +7,11 @@ import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 import type { Task } from '../src/types.js';
 import type { TaskRepository } from '../src/repositories/types.js';
-import { cleanupTaskWorktree, reconcileManagedWorktrees } from '../src/services/worktree-cleanup.js';
+import {
+  cleanupTaskWorktree,
+  inspectWorktreeProcessUse,
+  reconcileManagedWorktrees,
+} from '../src/services/worktree-cleanup.js';
 
 function git(args: string[], cwd: string): string {
   return execFileSync('git', args, { cwd, stdio: 'pipe' }).toString().trim();
@@ -124,6 +128,16 @@ test('cleanup permits generated dependencies but blocks ignored files that may c
   } finally {
     generated.dispose();
     valuable.dispose();
+  }
+});
+
+test('process-use inspection fails closed when the platform or process table cannot be verified', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'agentboard-process-check-'));
+  try {
+    assert.equal(inspectWorktreeProcessUse(root, 'darwin'), 'unknown');
+    assert.equal(inspectWorktreeProcessUse(root, 'linux', path.join(root, 'missing-proc')), 'unknown');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

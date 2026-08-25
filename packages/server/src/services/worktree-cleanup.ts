@@ -100,26 +100,50 @@ function isDisposableIgnoredPath(value: string): boolean {
     || name.endsWith('.pyc');
 }
 
-function hasProcessUsing(worktreePath: string): boolean {
-  if (process.platform !== 'linux') return false;
+export type WorktreeProcessUse = 'clear' | 'in-use' | 'unknown';
+
+function processEntryDisappeared(error: unknown): boolean {
+  return !!error && typeof error === 'object' && 'code' in error
+    && ((error as NodeJS.ErrnoException).code === 'ENOENT' || (error as NodeJS.ErrnoException).code === 'ESRCH');
+}
+
+export function inspectWorktreeProcessUse(
+  worktreePath: string,
+  platform = process.platform,
+  procRoot = '/proc',
+): WorktreeProcessUse {
+  if (platform !== 'linux') return 'unknown';
   let processes: string[];
-  try { processes = fs.readdirSync('/proc').filter((entry) => /^\d+$/.test(entry)); } catch { return true; }
+  try {
+    processes = fs.readdirSync(procRoot).filter((entry) => /^\d+$/.test(entry));
+  } catch {
+    return 'unknown';
+  }
   const root = fs.realpathSync(worktreePath);
   for (const pid of processes) {
-    for (const link of [`/proc/${pid}/cwd`, `/proc/${pid}/exe`]) {
+    for (const link of [`${procRoot}/${pid}/cwd`, `${procRoot}/${pid}/exe`]) {
       try {
-        if (isWithin(fs.realpathSync(link), root)) return true;
-      } catch { /* process exited or is inaccessible */ }
+        if (isWithin(fs.realpathSync(link), root)) return 'in-use';
+      } catch (error) {
+        if (!processEntryDisappeared(error)) return 'unknown';
+      }
     }
     let descriptors: string[];
-    try { descriptors = fs.readdirSync(`/proc/${pid}/fd`); } catch { continue; }
+    try {
+      descriptors = fs.readdirSync(`${procRoot}/${pid}/fd`);
+    } catch (error) {
+      if (processEntryDisappeared(error)) continue;
+      return 'unknown';
+    }
     for (const descriptor of descriptors) {
       try {
-        if (isWithin(fs.realpathSync(`/proc/${pid}/fd/${descriptor}`), root)) return true;
-      } catch { /* descriptor closed or is inaccessible */ }
+        if (isWithin(fs.realpathSync(`${procRoot}/${pid}/fd/${descriptor}`), root)) return 'in-use';
+      } catch (error) {
+        if (!processEntryDisappeared(error)) return 'unknown';
+      }
     }
   }
-  return false;
+  return 'clear';
 }
 
 function inspectRegisteredPath(
@@ -183,8 +207,12 @@ function inspectRegisteredPath(
     if (unsafe.length) {
       return { status: 'blocked', reason: 'Worktree has uncommitted, untracked, or non-disposable ignored files.' };
     }
-    if (hasProcessUsing(resolvedWorktree)) {
+    const processUse = inspectWorktreeProcessUse(resolvedWorktree);
+    if (processUse === 'in-use') {
       return { status: 'blocked', reason: 'A running process is using the worktree.' };
+    }
+    if (processUse === 'unknown') {
+      return { status: 'blocked', reason: 'Could not verify that no process is using the worktree.' };
     }
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);

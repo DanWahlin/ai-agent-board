@@ -321,6 +321,9 @@ export function createGroupsRouter(
         res.status(409).json({ error: `worktree cleanup blocked: ${child.title}: ${cleanup.reason}` });
         return;
       }
+      // A later child can change after preflight. Persist each successful removal
+      // immediately so a race cannot leave a stale path on the retained group.
+      await taskRepo.update(child.id, { worktreePath: undefined });
     }
 
     // CASCADE delete handles children

@@ -1,8 +1,8 @@
 import type { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 
-export type ServiceScope = 'projects:read' | 'agents:read' | 'orchestrations:create' | 'orchestrations:read' | 'orchestrations:message' | 'tasks:relationships';
-const ALL_SERVICE_SCOPES: ServiceScope[] = ['projects:read', 'agents:read', 'orchestrations:create', 'orchestrations:read', 'orchestrations:message', 'tasks:relationships'];
+export type ServiceScope = 'projects:read' | 'agents:read' | 'orchestrations:create' | 'orchestrations:read' | 'orchestrations:message' | 'tasks:relationships' | 'conversations:read' | 'conversations:write';
+const ALL_SERVICE_SCOPES: ServiceScope[] = ['projects:read', 'agents:read', 'orchestrations:create', 'orchestrations:read', 'orchestrations:message', 'tasks:relationships', 'conversations:read', 'conversations:write'];
 
 interface Credential { token?: string; sha256?: string; scopes: ServiceScope[] }
 
@@ -39,6 +39,10 @@ export function requiredScope(req: Request): ServiceScope | undefined {
   if (/^\/orchestrations\/[^/]+$/.test(p) && method === 'GET') return 'orchestrations:read';
   if (/^\/orchestrations\/[^/]+\/message$/.test(p) && method === 'POST') return 'orchestrations:message';
   if (/^\/tasks\/[^/]+\/relationships(?:\/[^/]+)?$/.test(p) && (method === 'GET' || method === 'POST' || method === 'DELETE')) return 'tasks:relationships';
+  if (p === '/conversations' || p.startsWith('/conversations/')) {
+    if (method === 'GET' || method === 'HEAD') return 'conversations:read';
+    if (method === 'POST' || method === 'PATCH' || method === 'DELETE') return 'conversations:write';
+  }
   if (p.startsWith('/tasks') || p.startsWith('/groups')) {
     return undefined;
   }
@@ -58,6 +62,25 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     if (!auth.authenticated) { res.status(401).json({ error: 'unauthorized' }); return; }
     if (!auth.legacy && (!scope || !auth.scopes.includes(scope))) {
       res.status(403).json({ error: 'forbidden' });
+      return;
+    }
+    next();
+    return;
+  }
+
+  // Conversation APIs are principal-scoped and always require an authenticated credential.
+  if (scope === 'conversations:read' || scope === 'conversations:write') {
+    if (!hasLegacyKey && serviceCredentials.length === 0) {
+      res.status(401).json({ error: 'unauthorized' });
+      return;
+    }
+    if (!token) {
+      res.status(401).json({ error: 'unauthorized' });
+      return;
+    }
+    const auth = authenticateToken(token);
+    if (!auth.authenticated || !auth.scopes.includes(scope)) {
+      res.status(auth.authenticated ? 403 : 401).json({ error: auth.authenticated ? 'forbidden' : 'unauthorized' });
       return;
     }
     next();
@@ -90,4 +113,8 @@ export function isValidToken(token: string | undefined): boolean {
   if (!process.env.API_KEY && credentials().length===0) return true;
   const auth = authenticateToken(token);
   return auth.authenticated && auth.legacy;
+}
+
+export function extractPrincipalId(req: Request): string | undefined {
+  return req.headers['x-principal-id'] as string | undefined;
 }

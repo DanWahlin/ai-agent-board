@@ -278,6 +278,97 @@ export function migrateSqliteDatabase(db: Database.Database): void {
     )
   `);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_task_attachments_task_id ON task_attachments(task_id)`);
+
+  // Conversation tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS conversations (
+      id TEXT PRIMARY KEY,
+      principal_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'active',
+      preferred_project_id TEXT,
+      revision INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      archived_at INTEGER,
+      deleted_at INTEGER,
+      idempotency_key TEXT
+    )
+  `);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_conversations_principal ON conversations(principal_id, state, created_at)`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_idempotency ON conversations(idempotency_key) WHERE idempotency_key IS NOT NULL`);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS conversation_messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL REFERENCES conversations(id),
+      seq INTEGER NOT NULL,
+      role TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      text TEXT NOT NULL,
+      client_event_id TEXT,
+      provider_type TEXT,
+      provider_model TEXT,
+      provider_session_id TEXT,
+      provider_epoch INTEGER,
+      provider_response_id TEXT,
+      created_at INTEGER NOT NULL,
+      UNIQUE(conversation_id, seq),
+      UNIQUE(conversation_id, client_event_id)
+    )
+  `);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_conv_messages_seq ON conversation_messages(conversation_id, seq)`);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS conversation_summaries (
+      conversation_id TEXT NOT NULL REFERENCES conversations(id),
+      version INTEGER NOT NULL,
+      through_seq INTEGER NOT NULL,
+      text TEXT NOT NULL,
+      model TEXT,
+      policy TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY(conversation_id, version)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS conversation_provider_sessions (
+      conversation_id TEXT NOT NULL REFERENCES conversations(id),
+      epoch INTEGER NOT NULL,
+      provider TEXT NOT NULL,
+      model TEXT,
+      session_id TEXT,
+      capabilities TEXT,
+      started_at INTEGER NOT NULL,
+      ended_at INTEGER,
+      expires_at INTEGER,
+      end_reason TEXT,
+      PRIMARY KEY(conversation_id, epoch)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS conversation_task_links (
+      conversation_id TEXT NOT NULL REFERENCES conversations(id),
+      task_id TEXT NOT NULL,
+      message_id TEXT,
+      attempt_id TEXT,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY(conversation_id, task_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS conversation_voice_claims (
+      conversation_id TEXT PRIMARY KEY,
+      principal_id TEXT NOT NULL,
+      epoch INTEGER NOT NULL,
+      claimed_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    )
+  `);
 }
 
 function hasSqliteForeignKey(
@@ -708,6 +799,96 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
     )
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_task_attachments_task_id ON task_attachments(task_id)`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS conversations (
+      id TEXT PRIMARY KEY,
+      principal_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'active',
+      preferred_project_id TEXT,
+      revision INTEGER NOT NULL DEFAULT 1,
+      created_at BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL,
+      archived_at BIGINT,
+      deleted_at BIGINT,
+      idempotency_key TEXT
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_conversations_principal ON conversations(principal_id, state, created_at)`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_idempotency ON conversations(idempotency_key) WHERE idempotency_key IS NOT NULL`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS conversation_messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL REFERENCES conversations(id),
+      seq INTEGER NOT NULL,
+      role TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      text TEXT NOT NULL,
+      client_event_id TEXT,
+      provider_type TEXT,
+      provider_model TEXT,
+      provider_session_id TEXT,
+      provider_epoch INTEGER,
+      provider_response_id TEXT,
+      created_at BIGINT NOT NULL,
+      UNIQUE(conversation_id, seq),
+      UNIQUE(conversation_id, client_event_id)
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_conv_messages_seq ON conversation_messages(conversation_id, seq)`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS conversation_summaries (
+      conversation_id TEXT NOT NULL REFERENCES conversations(id),
+      version INTEGER NOT NULL,
+      through_seq INTEGER NOT NULL,
+      text TEXT NOT NULL,
+      model TEXT,
+      policy TEXT,
+      created_at BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL,
+      PRIMARY KEY(conversation_id, version)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS conversation_provider_sessions (
+      conversation_id TEXT NOT NULL REFERENCES conversations(id),
+      epoch INTEGER NOT NULL,
+      provider TEXT NOT NULL,
+      model TEXT,
+      session_id TEXT,
+      capabilities TEXT,
+      started_at BIGINT NOT NULL,
+      ended_at BIGINT,
+      expires_at BIGINT,
+      end_reason TEXT,
+      PRIMARY KEY(conversation_id, epoch)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS conversation_task_links (
+      conversation_id TEXT NOT NULL REFERENCES conversations(id),
+      task_id TEXT NOT NULL,
+      message_id TEXT,
+      attempt_id TEXT,
+      created_at BIGINT NOT NULL,
+      PRIMARY KEY(conversation_id, task_id)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS conversation_voice_claims (
+      conversation_id TEXT PRIMARY KEY,
+      principal_id TEXT NOT NULL,
+      epoch INTEGER NOT NULL,
+      claimed_at BIGINT NOT NULL,
+      expires_at BIGINT NOT NULL
+    )
+  `);
 
   // Migrate existing FK to ON DELETE CASCADE if not already set
   const { rows: fkRows } = await pool.query(`

@@ -15,6 +15,7 @@ import { createGroupsRouter } from './routes/groups.js';
 import { createAttachmentsRouter } from './routes/attachments.js';
 import { createProjectsRouter } from './routes/projects.js';
 import { createOrchestrationsRouter } from './routes/orchestrations.js';
+import { createConversationsRouter } from './routes/conversations.js';
 import type { AttachmentStore } from './repositories/attachment-types.js';
 import { AgentManager } from './services/agent-manager.js';
 import { authMiddleware } from './middleware/auth.js';
@@ -22,6 +23,7 @@ import type { TaskRepository } from './repositories/types.js';
 import type { TemplateRepository } from './repositories/template-types.js';
 import type { TaskGroupRepository } from './repositories/group-types.js';
 import type { ProjectRepository } from './repositories/project-types.js';
+import type { ConversationRepository } from './repositories/conversation-types.js';
 import { startAgentForTask } from './routes/helpers.js';
 import { isLoopbackAddress } from './network-policy.js';
 import { reconcileManagedWorktrees } from './services/worktree-cleanup.js';
@@ -45,6 +47,7 @@ let templateRepo: TemplateRepository;
 let groupRepo: TaskGroupRepository;
 let projectRepo: ProjectRepository;
 let attachmentStore: AttachmentStore;
+let convRepo: ConversationRepository;
 let cleanupDb: () => void;
 
 // Initialize AgentManager
@@ -69,6 +72,8 @@ const agentManager = new AgentManager();
     groupRepo = new PostgresTaskGroupRepository(pool);
     const { PostgresAttachmentStore } = await import('./repositories/postgres-attachments.js');
     attachmentStore = new PostgresAttachmentStore(pool);
+    const { PostgresConversationRepository } = await import('./repositories/postgres-conversations.js');
+    convRepo = new PostgresConversationRepository(pool);
     cleanupDb = () => { pool.end(); };
     console.log('[server] using PostgreSQL backend');
   } else {
@@ -83,6 +88,8 @@ const agentManager = new AgentManager();
     groupRepo = new SqliteTaskGroupRepository(db);
     const { SqliteAttachmentStore } = await import('./repositories/sqlite-attachments.js');
     attachmentStore = new SqliteAttachmentStore(db);
+    const { SqliteConversationRepository } = await import('./repositories/sqlite-conversations.js');
+    convRepo = new SqliteConversationRepository(db);
     cleanupDb = () => { db.close(); };
     console.log('[server] using SQLite backend');
   }
@@ -120,6 +127,7 @@ const agentManager = new AgentManager();
   app.use('/api/tasks', createGitRouter(taskRepo, agentManager));
   app.use('/api/templates', createTemplateRouter(templateRepo));
   app.use('/api/groups', createGroupsRouter(groupRepo, taskRepo, agentManager, projectRepo));
+  app.use('/api/conversations', createConversationsRouter(convRepo, taskRepo));
   app.use('/api', createAttachmentsRouter(taskRepo, attachmentStore));
 
   // GET /api/agents — list available agents

@@ -245,3 +245,78 @@ export type WSMessage =
   | { type: 'group_updated'; payload: TaskGroup }
   | { type: 'project_updated'; payload: Project }
   | { type: 'project_deleted'; payload: { id: string } };
+
+// ─── Conversation types ─────────────────────────────────────────────
+
+export type ConversationState = 'active' | 'archived' | 'deleting' | 'deleted';
+export type ConversationMessageRole = 'user' | 'assistant';
+export type ConversationMessageKind = 'speech_final' | 'typed';
+
+export interface Conversation {
+  id: string;
+  principalId: string;
+  title: string;
+  state: ConversationState;
+  preferredProjectId?: string;
+  revision: number;
+  createdAt: number;
+  updatedAt: number;
+  archivedAt?: number;
+  deletedAt?: number;
+}
+
+export interface ConversationMessage {
+  id: string;
+  conversationId: string;
+  seq: number;
+  role: ConversationMessageRole;
+  kind: ConversationMessageKind;
+  text: string;
+  clientEventId?: string;
+  providerType?: string;
+  providerModel?: string;
+  providerSessionId?: string;
+  providerEpoch?: number;
+  providerResponseId?: string;
+  createdAt: number;
+}
+
+export interface ConversationSummary {
+  conversationId: string;
+  version: number;
+  throughSeq: number;
+  text: string;
+  model?: string;
+  policy?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ConversationProviderSession {
+  conversationId: string;
+  epoch: number;
+  provider: string;
+  model?: string;
+  sessionId?: string;
+  capabilities?: string;
+  startedAt: number;
+  endedAt?: number;
+  expiresAt?: number;
+  endReason?: string;
+}
+
+export interface ConversationTaskLink {
+  conversationId: string;
+  taskId: string;
+  messageId?: string;
+  attemptId?: string;
+  createdAt: number;
+}
+
+export interface ConversationVoiceClaim {
+  conversationId: string;
+  principalId: string;
+  epoch: number;
+  claimedAt: number;
+  expiresAt: number;
+}

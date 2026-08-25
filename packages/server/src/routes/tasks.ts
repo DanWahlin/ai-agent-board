@@ -255,6 +255,10 @@ export function createTaskRouter(repo: TaskRepository, agentManager: AgentManage
       res.status(400).json({ error: `timeoutMinutes must be an integer between ${MIN_AGENT_TIMEOUT_MINUTES} and ${MAX_AGENT_TIMEOUT_MINUTES}` });
       return;
     }
+    if (archived !== undefined) {
+      res.status(400).json({ error: 'use the archive or unarchive endpoint to change archived state' });
+      return;
+    }
     if (repoPath !== undefined && typeof repoPath !== 'string') {
       res.status(400).json({ error: 'repoPath must be a string' });
       return;
@@ -307,6 +311,15 @@ export function createTaskRouter(repo: TaskRepository, agentManager: AgentManage
       updates.completedAt = undefined;
     }
 
+    if (columnId === 'done' && task.worktreePath) {
+      if (agentManager.isRunning(task.id)) {
+        res.status(409).json({ error: 'cannot complete a task while its agent is running' });
+        return;
+      }
+      const cleanup = agentManager.removeWorktree(task);
+      if (cleanup.status !== 'blocked') updates.worktreePath = undefined;
+    }
+
     const updated = await repo.update(task.id, updates);
     if (!updated) {
       res.status(500).json({ error: 'failed to update task' });
@@ -319,11 +332,22 @@ export function createTaskRouter(repo: TaskRepository, agentManager: AgentManage
   // DELETE /api/tasks/:id
   router.delete('/:id', asyncHandler(async (req: Request, res: Response) => {
     const id = paramId(req);
-    if (!await repo.getById(id)) {
+    const task = await repo.getById(id);
+    if (!task) {
       res.status(404).json({ error: 'task not found' });
       return;
     }
-    agentManager.stopAgent(id);
+    if (agentManager.isRunning(id)) {
+      res.status(409).json({ error: 'stop the running agent before deleting its task' });
+      return;
+    }
+    if (task.worktreePath) {
+      const cleanup = agentManager.removeWorktree(task);
+      if (cleanup.status === 'blocked') {
+        res.status(409).json({ error: `worktree cleanup blocked: ${cleanup.reason}` });
+        return;
+      }
+    }
     agentManager.clearEvents(id);
     await repo.deleteEventsByTaskId(id);
     await repo.delete(id);
@@ -343,7 +367,16 @@ export function createTaskRouter(repo: TaskRepository, agentManager: AgentManage
       res.status(400).json({ error: 'can only archive completed or failed tasks' });
       return;
     }
-    const updated = await repo.update(id, { archived: true });
+    if (agentManager.isRunning(id)) {
+      res.status(409).json({ error: 'cannot archive a task while its agent is running' });
+      return;
+    }
+    const updates: Partial<Task> = { archived: true };
+    if (task.worktreePath) {
+      const cleanup = agentManager.removeWorktree(task);
+      if (cleanup.status !== 'blocked') updates.worktreePath = undefined;
+    }
+    const updated = await repo.update(id, updates);
     if (!updated) {
       res.status(500).json({ error: 'failed to archive task' });
       return;

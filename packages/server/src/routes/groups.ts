@@ -266,15 +266,17 @@ export function createGroupsRouter(
       const children = await groupRepo.getChildTasks(id);
       for (const child of children) {
         // Clean up worktree if one was created
+        let worktreePath = child.worktreePath;
         if (child.worktreePath) {
-          try { agentManager.removeWorktree(child); } catch { /* best effort */ }
+          const cleanup = agentManager.removeWorktree(child);
+          if (cleanup.status !== 'blocked') worktreePath = undefined;
         }
-        if (child.agentStatus !== 'idle') {
+        if (child.agentStatus !== 'idle' || worktreePath !== child.worktreePath) {
           await taskRepo.update(child.id, {
             agentStatus: 'idle',
             startedAt: undefined,
             completedAt: undefined,
-            worktreePath: undefined,
+            worktreePath,
           });
         }
       }
@@ -301,11 +303,23 @@ export function createGroupsRouter(
     // Stop group queue + all running agents
     await agentManager.stopGroup(id);
 
-    // Clean up worktrees
+    // Preflight every child so one dirty worktree cannot cause partial cleanup.
     const children = await groupRepo.getChildTasks(id);
+    const preflightBlocked = children.flatMap((child) => {
+      if (!child.worktreePath) return [];
+      const inspection = agentManager.inspectWorktree(child);
+      return inspection.status === 'blocked' ? [`${child.title}: ${inspection.reason}`] : [];
+    });
+    if (preflightBlocked.length) {
+      res.status(409).json({ error: `worktree cleanup blocked: ${preflightBlocked.join('; ')}` });
+      return;
+    }
     for (const child of children) {
-      if (child.worktreePath) {
-        try { agentManager.removeWorktree(child); } catch { /* best effort */ }
+      if (!child.worktreePath) continue;
+      const cleanup = agentManager.removeWorktree(child);
+      if (cleanup.status === 'blocked') {
+        res.status(409).json({ error: `worktree cleanup blocked: ${child.title}: ${cleanup.reason}` });
+        return;
       }
     }
 
@@ -377,13 +391,15 @@ export function createGroupsRouter(
       await agentManager.stopGroup(id);
     }
 
-    // Archive all children and clean up worktrees
+    // Archive all children. Clean worktrees are removed; blocked worktrees stay attached.
     const children = await groupRepo.getChildTasks(id);
     for (const child of children) {
+      let worktreePath = child.worktreePath;
       if (child.worktreePath) {
-        try { agentManager.removeWorktree(child); } catch { /* best effort */ }
+        const cleanup = agentManager.removeWorktree(child);
+        if (cleanup.status !== 'blocked') worktreePath = undefined;
       }
-      const t = await taskRepo.update(child.id, { archived: true, worktreePath: undefined });
+      const t = await taskRepo.update(child.id, { archived: true, worktreePath });
       if (t) broadcastTaskUpdate(t);
     }
 

@@ -9,6 +9,12 @@ import type { AgentProvider, AgentSession, AgentInfo, AgentAttachment } from '@c
 import type { AgentEvent as CoreAgentEvent } from '@codewithdan/agent-sdk-core';
 import { CopilotProvider, ClaudeProvider, CodexProvider, OpenCodeProvider, HermesProvider, OpenClawProvider, GrokProvider } from '@codewithdan/agent-sdk-core';
 import { broadcast } from '../websocket.js';
+import {
+  cleanupTaskWorktree,
+  inspectTaskWorktree,
+  type WorktreeCleanupInspection,
+  type WorktreeCleanupResult,
+} from './worktree-cleanup.js';
 import { UPLOADS_DIR } from '../routes/attachments.js';
 import type { AttachmentStore } from '../repositories/attachment-types.js';
 import { errorMessage } from '../utils.js';
@@ -372,23 +378,26 @@ export class AgentManager {
         return worktreePath;
       } catch (err2: unknown) {
         console.error(`[worktree] failed:`, errorMessage(err2));
+        if (!this.worktreeRegisteredForBranch(task.repoPath, worktreePath, task.branchName)) {
+          try { fs.rmSync(worktreePath, { recursive: true, force: true }); } catch { /* best effort */ }
+        }
         throw new Error(`Failed to create worktree: ${errorMessage(err2)}`);
       }
     }
   }
 
-  removeWorktree(task: Task): void {
-    if (!task.worktreePath || !task.repoPath) return;
-    try {
-      execFileSync('git', ['worktree', 'remove', task.worktreePath, '--force'], {
-        cwd: task.repoPath,
-        stdio: 'pipe',
-      });
-      console.log(`[worktree] removed ${task.worktreePath}`);
-    } catch (err: unknown) {
-      console.error(`[worktree] remove failed:`, errorMessage(err));
-      throw new Error(`Failed to remove worktree: ${errorMessage(err)}`);
+  inspectWorktree(task: Task): WorktreeCleanupInspection {
+    return inspectTaskWorktree(task);
+  }
+
+  removeWorktree(task: Task): WorktreeCleanupResult {
+    const result = cleanupTaskWorktree(task);
+    if (result.status === 'removed') {
+      console.log(`[worktree] removed ${task.worktreePath}; branch ${task.branchName} retained`);
+    } else if (result.status === 'blocked') {
+      console.warn(`[worktree] retained ${task.worktreePath}: ${result.reason}`);
     }
+    return result;
   }
 
   createPR(task: Task): { url: string } {

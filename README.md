@@ -62,7 +62,9 @@ Groups appear as a single card on the board showing aggregate progress. Click to
 - Agent panel with event coalescing (thinking, commands, output)
 - Git worktree isolation per task (optional)
 - **Local merge or PR** — merge worktree branch to main locally, or create a PR if a GitHub remote exists (auto-detected)
-- Worktree auto-cleanup after merge, PR creation, or archival
+- Clean worktrees are automatically removed after a card reaches Done, after merge or PR creation, and during archival or deletion
+- Cleanup removes only registered `agentboard-*` worktrees with matching repository/branch identity; dirty, active, or mismatched paths are retained and reported, and branches are always preserved
+- Startup reconciliation repairs stale task paths and removes clean orphaned Board worktrees left by interrupted runs
 - **Dual database backends** — SQLite (zero-config default) or PostgreSQL
 - Task templates for reusable task configurations
 - **Task Groups** — define multiple related tasks in one form, launch with configurable parallelism (slider 1..N), monitor aggregate progress

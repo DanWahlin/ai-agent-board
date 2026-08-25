@@ -24,6 +24,7 @@ import type { TaskGroupRepository } from './repositories/group-types.js';
 import type { ProjectRepository } from './repositories/project-types.js';
 import { startAgentForTask } from './routes/helpers.js';
 import { isLoopbackAddress } from './network-policy.js';
+import { reconcileManagedWorktrees } from './services/worktree-cleanup.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '8080', 10);
@@ -88,6 +89,29 @@ const agentManager = new AgentManager();
 
   agentManager.initEventPersistence(taskRepo);
   agentManager.initAttachmentStore(attachmentStore);
+
+  try {
+    const projects = await projectRepo.getAllWithCounts();
+    const tasks = (await Promise.all(projects.map(async (project) => {
+      const standalone = await taskRepo.getAll(true, project.id);
+      const groups = await groupRepo.getAll(true, project.id);
+      const children = (await Promise.all(groups.map((group) => groupRepo.getChildTasks(group.id)))).flat();
+      return [...standalone, ...children];
+    }))).flat();
+    const report = await reconcileManagedWorktrees(
+      tasks,
+      projects.flatMap((project) => project.repoPath ? [project.repoPath] : []),
+      taskRepo,
+    );
+    if (report.removed.length || report.missing.length || report.blocked.length) {
+      console.log(`[worktree] startup reconciliation: ${report.removed.length} removed, ${report.missing.length} missing, ${report.blocked.length} blocked`);
+      for (const blocked of report.blocked) {
+        console.warn(`[worktree] retained ${blocked.path}: ${blocked.reason}`);
+      }
+    }
+  } catch (err) {
+    console.error('[worktree] startup reconciliation failed:', err);
+  }
 
   app.use('/api/projects', createProjectsRouter(projectRepo, taskRepo, groupRepo, agentManager));
   app.use('/api/orchestrations', createOrchestrationsRouter(taskRepo, projectRepo, agentManager));

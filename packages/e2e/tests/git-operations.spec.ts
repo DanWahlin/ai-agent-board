@@ -105,7 +105,7 @@ test.describe('Git Operations — Merge, PR, Worktree Cleanup', () => {
     expect(res.status()).toBe(404);
   });
 
-  test('POST /cleanup-worktree returns 400 when no worktree', async ({ request }) => {
+  test('POST /cleanup-worktree is idempotent when no worktree exists', async ({ request }) => {
     const createRes = await request.post(`${API}/api/tasks`, {
       data: { title: 'No worktree task', priority: 'medium' },
     });
@@ -113,7 +113,8 @@ test.describe('Git Operations — Merge, PR, Worktree Cleanup', () => {
     createdTaskIds.push(task.id);
 
     const res = await request.post(`${API}/api/tasks/${task.id}/cleanup-worktree`);
-    expect(res.status()).toBe(400);
+    expect(res.status()).toBe(200);
+    await expect(res.json()).resolves.toEqual({ success: true, status: 'missing' });
   });
 
   test('POST /create-pr returns 400 without branch configured', async ({ request }) => {

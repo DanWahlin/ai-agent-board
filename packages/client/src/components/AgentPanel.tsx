@@ -891,7 +891,7 @@ export function AgentPanel({ task, onClose, onRun, onStop, onCreatePR, onMergeLo
             <div className="mx-4 my-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
               <p className="text-xs text-amber-200 font-medium mb-1">Delete worktree?</p>
               <p className="text-xs text-amber-300/80 mb-3">
-                This removes the worktree directory and its files. If you haven't created a PR yet, you won't be able to push these changes afterward.
+                This removes the clean worktree directory and generated files. The branch and committed changes remain available for pushing or re-creating the worktree.
               </p>
               <div className="flex items-center gap-2">
                 <button

@@ -124,7 +124,7 @@ export const api = {
     request<{ url: string }>(`/tasks/${id}/create-pr`, { method: 'POST' }),
 
   cleanupWorktree: (id: string) =>
-    request<{ success: boolean }>(`/tasks/${id}/cleanup-worktree`, { method: 'POST' }),
+    request<{ success: boolean; status: 'removed' | 'missing' }>(`/tasks/${id}/cleanup-worktree`, { method: 'POST' }),
 
   mergeLocal: (id: string) =>
     request<{ merged: boolean; baseBranch: string }>(`/tasks/${id}/merge-local`, { method: 'POST' }),

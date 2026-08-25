@@ -40,8 +40,8 @@ export function createGitRouter(repo: TaskRepository, agentManager: AgentManager
       const result = agentManager.createPR(task);
       // Clean up worktree after successful PR — branch is pushed, directory is no longer needed
       if (task.worktreePath) {
-        try { agentManager.removeWorktree(task); } catch { /* best effort */ }
-        await repo.update(id, { worktreePath: undefined });
+        const cleanup = agentManager.removeWorktree(task);
+        if (cleanup.status !== 'blocked') await repo.update(id, { worktreePath: undefined });
       }
       res.json(result);
     } catch (err: unknown) {
@@ -58,18 +58,21 @@ export function createGitRouter(repo: TaskRepository, agentManager: AgentManager
       return;
     }
     if (!task.worktreePath) {
-      res.status(400).json({ error: 'no worktree to clean up' });
+      res.json({ success: true, status: 'missing' });
       return;
     }
-    try {
-      agentManager.removeWorktree(task);
-    } catch (err: unknown) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to cleanup worktree' });
+    if (agentManager.isRunning(id)) {
+      res.status(409).json({ error: 'cannot clean up a worktree while its agent is running' });
+      return;
+    }
+    const cleanup = agentManager.removeWorktree(task);
+    if (cleanup.status === 'blocked') {
+      res.status(409).json({ error: cleanup.reason });
       return;
     }
     const updated = await repo.update(id, { worktreePath: undefined });
     if (updated) broadcastTaskUpdate(updated);
-    res.json({ success: true });
+    res.json({ success: true, status: cleanup.status });
   }));
 
   // POST /api/tasks/:id/merge-local — merge worktree branch into base branch locally
@@ -88,8 +91,8 @@ export function createGitRouter(repo: TaskRepository, agentManager: AgentManager
       const result = await agentManager.mergeLocal(task);
       // Clean up worktree after successful merge — branch is merged, directory is no longer needed
       if (task.worktreePath) {
-        try { agentManager.removeWorktree(task); } catch { /* best effort */ }
-        await repo.update(id, { worktreePath: undefined });
+        const cleanup = agentManager.removeWorktree(task);
+        if (cleanup.status !== 'blocked') await repo.update(id, { worktreePath: undefined });
       }
       res.json(result);
     } catch (err: unknown) {

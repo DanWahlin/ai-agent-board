@@ -177,12 +177,17 @@ test('[PG] voice claim and append with epoch fencing', serial, async () => {
       body: JSON.stringify({ title: 'Epoch Test' }),
     });
     const conv = await res.json();
+    // AgentMic epochs use microsecond-scale wall time plus an in-process
+    // monotonic counter. Keep this above PostgreSQL INT32 to catch schema drift.
+    const epoch1 = 1_787_707_709_757_000;
+    const epoch2 = epoch1 + 1;
+    const epoch3 = epoch2 + 1;
 
-    // Acquire claim epoch 1
+    // Acquire the first large claim epoch
     const c1 = await fetch(`${base}/${conv.id}/voice-claims`, {
       method: 'POST',
       headers: headers(TOKEN, PRINCIPAL),
-      body: JSON.stringify({ epoch: 1 }),
+      body: JSON.stringify({ epoch: epoch1 }),
     });
     assert.equal(c1.status, 200);
 
@@ -190,46 +195,46 @@ test('[PG] voice claim and append with epoch fencing', serial, async () => {
     const a1 = await fetch(`${base}/${conv.id}/messages`, {
       method: 'POST',
       headers: headers(TOKEN, PRINCIPAL),
-      body: JSON.stringify({ epoch: 1, messages: [{ id: 'm1', role: 'user', kind: 'typed', text: 'Hello' }] }),
+      body: JSON.stringify({ epoch: epoch1, messages: [{ id: 'm1', role: 'user', kind: 'typed', text: 'Hello' }] }),
     });
     assert.equal(a1.status, 200);
 
-    // Takeover to epoch 2
+    // Takeover to the next epoch
     const c2 = await fetch(`${base}/${conv.id}/voice-claims`, {
       method: 'POST',
       headers: headers(TOKEN, PRINCIPAL),
-      body: JSON.stringify({ epoch: 2 }),
+      body: JSON.stringify({ epoch: epoch2 }),
     });
     assert.equal(c2.status, 200);
 
-    // Stale epoch 1 append rejected
+    // Stale first epoch append rejected
     const a2 = await fetch(`${base}/${conv.id}/messages`, {
       method: 'POST',
       headers: headers(TOKEN, PRINCIPAL),
-      body: JSON.stringify({ epoch: 1, messages: [{ id: 'm2', role: 'user', kind: 'typed', text: 'Stale' }] }),
+      body: JSON.stringify({ epoch: epoch1, messages: [{ id: 'm2', role: 'user', kind: 'typed', text: 'Stale' }] }),
     });
     assert.equal(a2.status, 409);
 
-    // Release epoch 2
-    const rel = await fetch(`${base}/${conv.id}/voice-claims/2`, {
+    // Release the current epoch
+    const rel = await fetch(`${base}/${conv.id}/voice-claims/${epoch2}`, {
       method: 'DELETE',
       headers: headers(TOKEN, PRINCIPAL),
     });
     assert.equal(rel.status, 204);
 
-    // Cannot reuse epoch 2 (fence)
+    // Cannot reuse the released epoch (fence)
     const c3 = await fetch(`${base}/${conv.id}/voice-claims`, {
       method: 'POST',
       headers: headers(TOKEN, PRINCIPAL),
-      body: JSON.stringify({ epoch: 2 }),
+      body: JSON.stringify({ epoch: epoch2 }),
     });
     assert.equal(c3.status, 409);
 
-    // Epoch 3 works
+    // A greater epoch works
     const c4 = await fetch(`${base}/${conv.id}/voice-claims`, {
       method: 'POST',
       headers: headers(TOKEN, PRINCIPAL),
-      body: JSON.stringify({ epoch: 3 }),
+      body: JSON.stringify({ epoch: epoch3 }),
     });
     assert.equal(c4.status, 200);
   });

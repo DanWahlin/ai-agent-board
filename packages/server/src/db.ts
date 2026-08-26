@@ -861,7 +861,7 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
       provider_type TEXT,
       provider_model TEXT,
       provider_session_id TEXT,
-      provider_epoch INTEGER,
+      provider_epoch BIGINT,
       provider_response_id TEXT,
       created_at BIGINT NOT NULL,
       UNIQUE(conversation_id, seq),
@@ -887,7 +887,7 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS conversation_provider_sessions (
       conversation_id TEXT NOT NULL REFERENCES conversations(id),
-      epoch INTEGER NOT NULL CHECK(epoch >= 1),
+      epoch BIGINT NOT NULL CHECK(epoch >= 1),
       provider TEXT NOT NULL CHECK(length(provider) <= 64),
       model TEXT CHECK(model IS NULL OR length(model) <= 128),
       session_id TEXT CHECK(session_id IS NULL OR length(session_id) <= 256),
@@ -915,7 +915,7 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
     CREATE TABLE IF NOT EXISTS conversation_voice_claims (
       conversation_id TEXT PRIMARY KEY,
       principal_id TEXT NOT NULL,
-      epoch INTEGER NOT NULL CHECK(epoch >= 1),
+      epoch BIGINT NOT NULL CHECK(epoch >= 1),
       claimed_at BIGINT NOT NULL,
       expires_at BIGINT NOT NULL
     )
@@ -924,9 +924,17 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS conversation_epoch_fences (
       conversation_id TEXT PRIMARY KEY REFERENCES conversations(id),
-      max_epoch INTEGER NOT NULL CHECK(max_epoch >= 1)
+      max_epoch BIGINT NOT NULL CHECK(max_epoch >= 1)
     )
   `);
+
+  // AgentMic uses microsecond-scale, JavaScript-safe integer epochs so a new
+  // process can monotonically supersede claims created before a restart.
+  // PostgreSQL INTEGER is only 32-bit; widen upgraded schemas as well.
+  await pool.query('ALTER TABLE conversation_messages ALTER COLUMN provider_epoch TYPE BIGINT');
+  await pool.query('ALTER TABLE conversation_provider_sessions ALTER COLUMN epoch TYPE BIGINT');
+  await pool.query('ALTER TABLE conversation_voice_claims ALTER COLUMN epoch TYPE BIGINT');
+  await pool.query('ALTER TABLE conversation_epoch_fences ALTER COLUMN max_epoch TYPE BIGINT');
 
   // Idempotent migration: if old global-unique idempotency index exists, recreate as principal-scoped
   try {

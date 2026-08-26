@@ -190,6 +190,19 @@ test('[PG] voice claim and append with epoch fencing', serial, async () => {
       body: JSON.stringify({ epoch: epoch1 }),
     });
     assert.equal(c1.status, 200);
+    const claim = await c1.json();
+    assert.equal(claim.epoch, epoch1);
+    assert.equal(typeof claim.epoch, 'number');
+
+    const begin = await fetch(`${base}/${conv.id}/provider-sessions`, {
+      method: 'POST',
+      headers: headers(TOKEN, PRINCIPAL),
+      body: JSON.stringify({ epoch: epoch1, provider: 'xai' }),
+    });
+    assert.equal(begin.status, 201);
+    const providerSession = await begin.json();
+    assert.equal(providerSession.epoch, epoch1);
+    assert.equal(typeof providerSession.epoch, 'number');
 
     // Append with valid claim
     const a1 = await fetch(`${base}/${conv.id}/messages`, {

@@ -102,7 +102,7 @@ export class PostgresConversationRepository implements ConversationRepository {
   private rowToProviderSession(row: any): ConversationProviderSession {
     return {
       conversationId: row.conversation_id,
-      epoch: row.epoch,
+      epoch: Number(row.epoch),
       provider: row.provider,
       model: row.model ?? undefined,
       sessionId: row.session_id ?? undefined,
@@ -128,7 +128,7 @@ export class PostgresConversationRepository implements ConversationRepository {
     return {
       conversationId: row.conversation_id,
       principalId: row.principal_id,
-      epoch: row.epoch,
+      epoch: Number(row.epoch),
       claimedAt: Number(row.claimed_at),
       expiresAt: Number(row.expires_at),
     };

@@ -20,6 +20,7 @@ import type { AttachmentStore } from '../repositories/attachment-types.js';
 import { errorMessage } from '../utils.js';
 import { detectAvailableAgents } from './agent-detection.js';
 import { resolveTaskTimeoutMs } from './agent-timeout.js';
+import { hermesPermissionHooks } from './hermes-permissions.js';
 
 function loadAttachmentAsBase64(filePath: string, displayName: string, mimeType: string): AgentAttachment | null {
   try {
@@ -633,6 +634,7 @@ Optional list of any work you did not complete or that should be followed up. Om
           workingDirectory,
           repoPath: task.repoPath,
           systemPrompt,
+          hooks: hermesPermissionHooks(task.agentType, process.env.HERMES_AUTO_APPROVE_TOOLS),
           onEvent: (coreEvent: CoreAgentEvent) => {
             const metadata: Record<string, unknown> = { ...coreEvent.metadata };
             let eventType = coreEvent.type;

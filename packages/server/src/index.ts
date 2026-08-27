@@ -48,7 +48,7 @@ let groupRepo: TaskGroupRepository;
 let projectRepo: ProjectRepository;
 let attachmentStore: AttachmentStore;
 let convRepo: ConversationRepository;
-let cleanupDb: () => void;
+let cleanupDb: () => void | Promise<void>;
 
 // Initialize AgentManager
 const agentManager = new AgentManager();
@@ -74,7 +74,7 @@ const agentManager = new AgentManager();
     attachmentStore = new PostgresAttachmentStore(pool);
     const { PostgresConversationRepository } = await import('./repositories/postgres-conversations.js');
     convRepo = new PostgresConversationRepository(pool);
-    cleanupDb = () => { pool.end(); };
+    cleanupDb = async () => { await pool.end(); };
     console.log('[server] using PostgreSQL backend');
   } else {
     // SQLite fallback
@@ -251,7 +251,7 @@ const agentManager = new AgentManager();
       process.exit(1);
     }, 5_000).unref();
     await agentManager.shutdownAll();
-    try { cleanupDb(); } catch (err) { console.error('[server] db cleanup error:', err); }
+    try { await cleanupDb(); } catch (err) { console.error('[server] db cleanup error:', err); }
     await new Promise<void>((resolve) => server.close(() => resolve()));
     clearTimeout(forceExit);
     process.exit(0);

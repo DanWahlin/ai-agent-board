@@ -499,6 +499,7 @@ export class AgentManager {
     const agentType = task.agentType || 'copilot';
     const sessionStartTime = Date.now();
     let terminated = false;
+    let sessionGeneration: ManagedSession | undefined;
 
     // Clear any prior run's summary so a rerun never displays a stale result
     // (e.g. if this run fails before producing a new summary).
@@ -507,11 +508,16 @@ export class AgentManager {
     }
     const terminateOnce = async (status: 'complete' | 'failed', errorMessage?: string) => {
       if (terminated) return;
+      const entry = this.sessions.get(task.id);
+      if (sessionGeneration && entry && entry !== sessionGeneration) {
+        terminated = true;
+        return;
+      }
       // If the task was stopped by the user, stopAgent already handled cleanup
       if (this.stoppedTasks.has(task.id)) { terminated = true; return; }
       terminated = true;
-      const entry = this.sessions.get(task.id);
       if (entry?.timeoutId) clearTimeout(entry.timeoutId);
+      if (entry && (!sessionGeneration || entry === sessionGeneration)) this.sessions.delete(task.id);
       const duration = Date.now() - sessionStartTime;
 
       // Item 5: Emit structured summary event
@@ -560,7 +566,9 @@ export class AgentManager {
     }
 
     // Synchronous placeholder to prevent duplicate starts during async session creation
-    this.sessions.set(task.id, { startTime: sessionStartTime, agentType });
+    this.stoppedTasks.delete(task.id);
+    sessionGeneration = { startTime: sessionStartTime, agentType };
+    this.sessions.set(task.id, sessionGeneration);
 
     // Set up worktree if configured
     let worktreePath: string | undefined;
@@ -603,12 +611,12 @@ export class AgentManager {
     // Launch the agent session asynchronously
     (async () => {
       let taskScopedProvider: AgentProvider | null = null;
-      const managed = this.sessions.get(task.id);
-      if (!managed) return;
+      const managed = sessionGeneration;
+      if (!managed || this.sessions.get(task.id) !== managed) return;
       const taskTimeoutMs = resolveTaskTimeoutMs(task);
       const timeoutId = setTimeout(() => {
         const entry = this.sessions.get(task.id);
-        if (!entry) return;
+        if (entry !== managed) return;
         const timeoutMsg = `Agent timed out after ${Math.round(taskTimeoutMs / 60000)} minutes`;
         console.warn(`[agent-manager] task ${task.id} timed out after ${taskTimeoutMs}ms`);
         this.emitEvent(task.id, {
@@ -637,10 +645,10 @@ export class AgentManager {
             },
           });
           const entry = this.sessions.get(task.id);
-          if (!entry) return;
+          if (entry !== managed) return;
           entry.taskScopedProvider = taskScopedProvider;
           await taskScopedProvider.start();
-          if (!this.sessions.has(task.id)) return;
+          if (this.sessions.get(task.id) !== managed) return;
           activeProvider = taskScopedProvider;
         }
         const hasGit = fs.existsSync(path.join(workingDirectory, '.git'));
@@ -765,7 +773,7 @@ Optional list of any work you did not complete or that should be followed up. Om
         });
 
         const activeEntry = this.sessions.get(task.id);
-        if (!activeEntry) {
+        if (activeEntry !== managed) {
           await session.destroy().catch(() => {});
           return;
         }
@@ -798,7 +806,7 @@ Optional list of any work you did not complete or that should be followed up. Om
         clearTimeout(timeoutId);
 
         // Primary completion path — status comes from the provider
-        if (this.sessions.has(task.id)) {
+        if (this.sessions.get(task.id) === managed) {
           this.sessions.delete(task.id);
           // On success, persist the agent-authored summary BEFORE the status
           // transition so the task-update broadcast carries it to clients.
@@ -823,6 +831,7 @@ Optional list of any work you did not complete or that should be followed up. Om
           session.destroy().catch(() => {});
         }
       } catch (err: unknown) {
+        if (this.sessions.get(task.id) !== managed) return;
         const message = errorMessage(err);
         const isCliMissing =
           message.includes('ENOENT') ||
@@ -840,7 +849,7 @@ Optional list of any work you did not complete or that should be followed up. Om
         });
 
         const entry = this.sessions.get(task.id);
-        if (entry) this.sessions.delete(task.id);
+        if (entry === managed) this.sessions.delete(task.id);
         terminateOnce('failed', errorContent);
       } finally {
         clearTimeout(timeoutId);

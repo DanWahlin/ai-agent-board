@@ -43,6 +43,8 @@ interface ManagedSession {
   session?: AgentSession;
   taskScopedProvider?: AgentProvider;
   statusTransition?: Promise<void>;
+  resultPersistence?: Promise<void>;
+  teardown?: Promise<void>;
   timeoutId?: ReturnType<typeof setTimeout>;
   startTime: number;
   agentType: AgentType;
@@ -120,6 +122,7 @@ export class AgentManager {
   private sessions = new Map<string, ManagedSession>();
   private latestRunTokens = new Map<string, symbol>();
   private terminatingTasks = new Set<string>();
+  private shuttingDown = false;
   private deletedTasks = new Set<string>();
   /** Tasks stopped by user — prevents duplicate agent_complete from terminateOnce */
   private stoppedTasks = new Set<string>();
@@ -498,7 +501,7 @@ export class AgentManager {
     onStatusChange: (status: Task['agentStatus']) => void | Promise<void>,
     onWorktreeCreated?: (worktreePath: string) => void | Promise<void>,
   ): boolean {
-    if (this.sessions.has(task.id) || this.terminatingTasks.has(task.id)) return false;
+    if (this.shuttingDown || this.sessions.has(task.id) || this.terminatingTasks.has(task.id)) return false;
 
     const agentType = task.agentType || 'copilot';
     const sessionStartTime = Date.now();
@@ -629,10 +632,16 @@ export class AgentManager {
           content: timeoutMsg,
           timestamp: Date.now(),
         });
-        entry.taskScopedProvider?.stop().catch(() => {});
-        entry.session?.abort().catch(() => {});
-        entry.session?.destroy().catch(() => {});
-        terminateOnce('failed', timeoutMsg);
+        this.sessions.delete(task.id);
+        this.terminatingTasks.add(task.id);
+        const teardown = Promise.allSettled([
+          entry.taskScopedProvider?.stop(),
+          entry.session?.abort(),
+          entry.session?.destroy(),
+          entry.statusTransition,
+        ]).then(() => undefined);
+        entry.teardown = teardown;
+        void teardown.then(() => terminateOnce('failed', timeoutMsg));
       }, taskTimeoutMs);
       managed.timeoutId = timeoutId;
       try {
@@ -828,18 +837,26 @@ Optional list of any work you did not complete or that should be followed up. Om
           // Always write (extracted value or null) so a rerun can't leave a
           // stale summary from a previous run. Never let this block completion.
           if (result.status === 'complete') {
-            try {
-              const summary = extractTaskSummary(summaryBuffer);
-              await this.eventRepo?.update(task.id, { summary });
-              const fullOutput = extractFullAgentOutput(resultBuffer);
-              if (fullOutput && this.eventRepo) {
-                await this.eventRepo.insertEvent({
-                  id: uuid(), taskId: task.id, type: 'complete', content: fullOutput,
-                  timestamp: Date.now(), metadata: { finalOutput: true },
-                });
+            const persistence = (async () => {
+              try {
+                const summary = extractTaskSummary(summaryBuffer);
+                await this.eventRepo?.update(task.id, { summary });
+                const fullOutput = extractFullAgentOutput(resultBuffer);
+                if (fullOutput && this.eventRepo) {
+                  await this.eventRepo.insertEvent({
+                    id: uuid(), taskId: task.id, type: 'complete', content: fullOutput,
+                    timestamp: Date.now(), metadata: { finalOutput: true },
+                  });
+                }
+              } catch (err) {
+                console.error(`[agent-manager] failed to persist result for task ${task.id}:`, errorMessage(err));
               }
-            } catch (err) {
-              console.error(`[agent-manager] failed to persist result for task ${task.id}:`, errorMessage(err));
+            })();
+            managed.resultPersistence = persistence;
+            try {
+              await persistence;
+            } finally {
+              if (managed.resultPersistence === persistence) managed.resultPersistence = undefined;
             }
           }
           terminateOnce(result.status, result.error);
@@ -932,6 +949,7 @@ Optional list of any work you did not complete or that should be followed up. Om
       try { await entry.session?.abort(); } catch { /* ignore */ }
       try { await entry.session?.destroy(); } catch { /* ignore */ }
       await entry.statusTransition?.catch(() => {});
+      await entry.resultPersistence?.catch(() => {});
 
       this.emitEvent(taskId, {
         id: uuid(), taskId, type: 'error',
@@ -974,6 +992,7 @@ Optional list of any work you did not complete or that should be followed up. Om
   }
 
   shutdownAll(): void {
+    this.shuttingDown = true;
     const entries = [...this.sessions.entries()];
     this.sessions.clear();
     this.latestRunTokens.clear();
@@ -985,6 +1004,8 @@ Optional list of any work you did not complete or that should be followed up. Om
         try { await entry.taskScopedProvider?.stop(); } catch { /* ignore */ }
         try { await entry.session?.abort(); } catch { /* ignore */ }
         try { await entry.session?.destroy(); } catch { /* ignore */ }
+        await entry.resultPersistence?.catch(() => {});
+        await entry.teardown?.catch(() => {});
       })();
     }
 

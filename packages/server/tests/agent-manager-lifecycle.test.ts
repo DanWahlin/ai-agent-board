@@ -39,6 +39,8 @@ function managerWithSession(session: Record<string, unknown>): AgentManager {
   };
   internals.providers.set('copilot', {
     displayName: 'Fake Copilot',
+    start: async () => {},
+    stop: async () => {},
     createSession: async () => session,
   });
   internals.availableAgents = [{ name: 'copilot', displayName: 'Fake Copilot', available: true }];
@@ -118,6 +120,84 @@ test('a completed run stays claimed until result persistence and terminal status
   persistenceGate.resolve();
   await waitFor(() => statuses.includes('complete'), 'completion did not finish after persistence');
   assert.equal(manager.isRunning('result-persistence'), false);
+});
+
+test('stop keeps result persistence fenced before admitting a successor', async () => {
+  const persistenceStarted = deferred<void>();
+  const persistenceGate = deferred<void>();
+  let stopFinished = false;
+  const manager = managerWithSession({
+    execute: async () => ({ status: 'complete' }),
+    abort: async () => {},
+    destroy: async () => {},
+    send: async () => {},
+  });
+  manager.initEventPersistence({
+    update: async () => {
+      persistenceStarted.resolve();
+      await persistenceGate.promise;
+      return task('stop-persistence');
+    },
+    insertEvent: async () => {},
+    getEventsByTaskId: async () => [],
+  } as never);
+
+  assert.equal(manager.startAgent(task('stop-persistence'), async () => {}), true);
+  await persistenceStarted.promise;
+  const stopping = manager.stopAgent('stop-persistence').then((value) => { stopFinished = true; return value; });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(stopFinished, false);
+  assert.equal(manager.isRunning('stop-persistence'), true);
+  assert.equal(manager.startAgent(task('stop-persistence'), async () => {}), false);
+
+  persistenceGate.resolve();
+  assert.equal(await stopping, true);
+  assert.equal(manager.isRunning('stop-persistence'), false);
+});
+
+test('timeout keeps the task busy until old execution teardown settles', async () => {
+  const oldTimeout = process.env.AGENT_TIMEOUT_MS;
+  process.env.AGENT_TIMEOUT_MS = '20';
+  const executeResult = deferred<{ status: 'complete' }>();
+  const abortGate = deferred<void>();
+  const destroyGate = deferred<void>();
+  const statuses: string[] = [];
+  const manager = managerWithSession({
+    execute: async () => executeResult.promise,
+    abort: async () => abortGate.promise,
+    destroy: async () => destroyGate.promise,
+    send: async () => {},
+  });
+
+  try {
+    assert.equal(manager.startAgent(task('timeout-teardown'), async (status) => { statuses.push(status); }), true);
+    await waitFor(() => statuses.includes('executing'), 'session never entered executing');
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    assert.equal(manager.isRunning('timeout-teardown'), true);
+    assert.equal(manager.startAgent(task('timeout-teardown'), async () => {}), false);
+
+    abortGate.resolve();
+    destroyGate.resolve();
+    await waitFor(() => statuses.includes('failed'), 'timeout terminal status did not persist');
+    assert.equal(manager.isRunning('timeout-teardown'), false);
+    executeResult.resolve({ status: 'complete' });
+  } finally {
+    if (oldTimeout === undefined) delete process.env.AGENT_TIMEOUT_MS;
+    else process.env.AGENT_TIMEOUT_MS = oldTimeout;
+  }
+});
+
+test('shutdown rejects new sessions after teardown begins', () => {
+  const manager = managerWithSession({
+    execute: async () => ({ status: 'complete' }),
+    abort: async () => {},
+    destroy: async () => {},
+    send: async () => {},
+  });
+  manager.shutdownAll();
+  assert.equal(manager.startAgent(task('after-shutdown'), async () => {}), false);
 });
 
 test('shutdown stops task-scoped providers before session teardown', async () => {

@@ -20,8 +20,10 @@ exec /usr/bin/bwrap \
   --ro-bind /etc/passwd /etc/passwd \
   --ro-bind /etc/group /etc/group \
   --ro-bind /etc/ld.so.cache /etc/ld.so.cache \
-  --ro-bind /root/projects /root/projects \
-  --bind /tmp /tmp \
+  --ro-bind /root/projects/agent-mic /root/projects/agent-mic \
+  --ro-bind /root/projects/ai-agent-board /root/projects/ai-agent-board \
+  --tmpfs /tmp \
+  --bind /var/lib/agentboard-worktrees /var/lib/agentboard-worktrees \
   --bind /var/lib/agentmic-hermes-sandbox /home/hermes \
   --proc /proc --dev /dev --tmpfs /run \
   --setenv HOME /home/hermes \

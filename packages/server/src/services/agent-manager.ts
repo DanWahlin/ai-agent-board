@@ -635,9 +635,9 @@ export class AgentManager {
         this.sessions.delete(task.id);
         this.terminatingTasks.add(task.id);
         const teardown = Promise.allSettled([
-          entry.taskScopedProvider?.stop(),
-          entry.session?.abort(),
-          entry.session?.destroy(),
+          Promise.resolve().then(() => entry.taskScopedProvider?.stop()),
+          Promise.resolve().then(() => entry.session?.abort()),
+          Promise.resolve().then(() => entry.session?.destroy()),
           entry.statusTransition,
         ]).then(() => undefined);
         entry.teardown = teardown;

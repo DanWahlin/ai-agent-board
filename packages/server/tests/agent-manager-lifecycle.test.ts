@@ -189,6 +189,27 @@ test('timeout keeps the task busy until old execution teardown settles', async (
   }
 });
 
+test('synchronous timeout teardown errors cannot wedge admission', async () => {
+  const oldTimeout = process.env.AGENT_TIMEOUT_MS;
+  process.env.AGENT_TIMEOUT_MS = '20';
+  const statuses: string[] = [];
+  const manager = managerWithSession({
+    execute: async () => new Promise(() => {}),
+    abort: () => { throw new Error('synchronous abort failure'); },
+    destroy: () => { throw new Error('synchronous destroy failure'); },
+    send: async () => {},
+  });
+
+  try {
+    assert.equal(manager.startAgent(task('timeout-sync-throw'), async (status) => { statuses.push(status); }), true);
+    await waitFor(() => statuses.includes('failed'), 'timeout did not survive synchronous teardown errors');
+    assert.equal(manager.isRunning('timeout-sync-throw'), false);
+  } finally {
+    if (oldTimeout === undefined) delete process.env.AGENT_TIMEOUT_MS;
+    else process.env.AGENT_TIMEOUT_MS = oldTimeout;
+  }
+});
+
 test('shutdown rejects new sessions after teardown begins', () => {
   const manager = managerWithSession({
     execute: async () => ({ status: 'complete' }),

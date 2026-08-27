@@ -584,7 +584,7 @@ export async function startAgentForTask(
   if (updated) {
     broadcastTaskUpdate(updated);
     const onStatusChange = makeStatusCallback(repo, task.id);
-    agentManager.startAgent(
+    const started = agentManager.startAgent(
       updated,
       async (status) => {
         if (status === 'complete' || status === 'failed') await repo.clearRun(task.id);
@@ -592,5 +592,9 @@ export async function startAgentForTask(
       },
       makeWorktreeCallback(repo, task.id),
     );
+    if (!started) {
+      await repo.clearRun(task.id);
+      await onStatusChange('failed');
+    }
   }
 }

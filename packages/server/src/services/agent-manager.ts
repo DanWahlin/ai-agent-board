@@ -42,6 +42,7 @@ interface ManagedSession {
   runToken: symbol;
   session?: AgentSession;
   taskScopedProvider?: AgentProvider;
+  statusTransition?: Promise<void>;
   timeoutId?: ReturnType<typeof setTimeout>;
   startTime: number;
   agentType: AgentType;
@@ -496,8 +497,8 @@ export class AgentManager {
     task: Task,
     onStatusChange: (status: Task['agentStatus']) => void | Promise<void>,
     onWorktreeCreated?: (worktreePath: string) => void | Promise<void>,
-  ): void {
-    if (this.sessions.has(task.id) || this.terminatingTasks.has(task.id)) return;
+  ): boolean {
+    if (this.sessions.has(task.id) || this.terminatingTasks.has(task.id)) return false;
 
     const agentType = task.agentType || 'copilot';
     const sessionStartTime = Date.now();
@@ -510,7 +511,7 @@ export class AgentManager {
     if (task.summary != null) {
       void this.eventRepo?.update(task.id, { summary: null }).catch(() => {});
     }
-    const terminateOnce = async (status: 'complete' | 'failed', errorMessage?: string) => {
+    const terminateOnce = async (status: 'complete' | 'failed', terminalError?: string) => {
       if (terminated) return;
       const entry = this.sessions.get(task.id);
       if (sessionGeneration && this.latestRunTokens.get(task.id) !== runToken) {
@@ -521,46 +522,33 @@ export class AgentManager {
       if (this.stoppedTasks.has(task.id)) { terminated = true; return; }
       terminated = true;
       this.terminatingTasks.add(task.id);
-      if (entry?.timeoutId) clearTimeout(entry.timeoutId);
-      if (entry && (!sessionGeneration || entry === sessionGeneration)) this.sessions.delete(task.id);
-      const duration = Date.now() - sessionStartTime;
-
-      // Item 5: Emit structured summary event
-      if (status === 'complete') {
-        this.emitEvent(task.id, {
-          id: uuid(), taskId: task.id, type: 'complete',
-          content: 'Task completed successfully.',
-          timestamp: Date.now(),
-          metadata: { agentType, duration },
-        });
-      } else {
-        this.emitEvent(task.id, {
-          id: uuid(), taskId: task.id, type: 'error',
-          content: errorMessage || 'Task failed.',
-          timestamp: Date.now(),
-          metadata: { agentType, duration, error: errorMessage },
-        });
-      }
-
-      const eventCount = (await this.getEvents(task.id)).length;
-      if (sessionGeneration && this.latestRunTokens.get(task.id) !== runToken) {
-        this.terminatingTasks.delete(task.id);
-        return;
-      }
-
-      // Item 2: Broadcast agent_complete WS event
-      broadcast({
-        type: 'agent_complete',
-        payload: {
-          taskId: task.id,
-          status,
-          agentType,
-          duration,
-          eventCount,
-        },
-      });
-
       try {
+        if (entry?.timeoutId) clearTimeout(entry.timeoutId);
+        if (entry && (!sessionGeneration || entry === sessionGeneration)) this.sessions.delete(task.id);
+        const duration = Date.now() - sessionStartTime;
+
+        this.emitEvent(task.id, {
+          id: uuid(), taskId: task.id, type: status === 'complete' ? 'complete' : 'error',
+          content: status === 'complete' ? 'Task completed successfully.' : terminalError || 'Task failed.',
+          timestamp: Date.now(),
+          metadata: { agentType, duration, ...(status === 'failed' ? { error: terminalError } : {}) },
+        });
+
+        let eventCount = 0;
+        try {
+          eventCount = (await this.getEvents(task.id)).length;
+        } catch (err: unknown) {
+          console.error(`[agent-manager] failed to count terminal events for task ${task.id}:`, errorMessage(err));
+        }
+        if (sessionGeneration && this.latestRunTokens.get(task.id) !== runToken) return;
+
+        broadcast({
+          type: 'agent_complete',
+          payload: { taskId: task.id, status, agentType, duration, eventCount },
+        });
+
+        await entry?.statusTransition?.catch(() => {});
+        if (sessionGeneration && this.latestRunTokens.get(task.id) !== runToken) return;
         await onStatusChange(status);
       } finally {
         if (this.latestRunTokens.get(task.id) === runToken) this.latestRunTokens.delete(task.id);
@@ -571,14 +559,14 @@ export class AgentManager {
     const provider = this.providers.get(agentType);
     if (!provider) {
       void terminateOnce('failed', `No provider registered for agent type: ${agentType}`);
-      return;
+      return true;
     }
 
     // Check if agent is available
     const agentInfo = this.availableAgents.find(a => a.name === agentType);
     if (!agentInfo?.available) {
       void terminateOnce('failed', `Agent ${provider.displayName} is not available: ${agentInfo?.reason || 'unknown reason'}`);
-      return;
+      return true;
     }
 
     // Synchronous placeholder to prevent duplicate starts during async session creation
@@ -621,7 +609,7 @@ export class AgentManager {
           timestamp: Date.now(),
         });
         terminateOnce('failed', `Worktree setup failed: ${errorMessage(err)}`);
-        return;
+        return true;
       }
     }
 
@@ -641,7 +629,6 @@ export class AgentManager {
           content: timeoutMsg,
           timestamp: Date.now(),
         });
-        this.sessions.delete(task.id);
         entry.taskScopedProvider?.stop().catch(() => {});
         entry.session?.abort().catch(() => {});
         entry.session?.destroy().catch(() => {});
@@ -796,7 +783,14 @@ Optional list of any work you did not complete or that should be followed up. Om
           return;
         }
         activeEntry.session = session;
-        onStatusChange('executing');
+        const executingTransition = Promise.resolve(onStatusChange('executing'));
+        activeEntry.statusTransition = executingTransition;
+        try {
+          await executingTransition;
+        } finally {
+          if (activeEntry.statusTransition === executingTransition) activeEntry.statusTransition = undefined;
+        }
+        if (this.sessions.get(task.id) !== managed || this.latestRunTokens.get(task.id) !== runToken) return;
 
         // Build prompt and execute — each provider returns a typed AgentResult
         const safeDescription = (task.description || '').replace(/[<>]/g, '');
@@ -806,6 +800,7 @@ Optional list of any work you did not complete or that should be followed up. Om
         let agentAttachments: AgentAttachment[] | undefined;
         if (this.attachmentStore) {
           const taskAttachments = await this.attachmentStore.getByTaskId(task.id);
+          if (this.sessions.get(task.id) !== managed || this.latestRunTokens.get(task.id) !== runToken) return;
           if (taskAttachments.length > 0) {
             const loaded: AgentAttachment[] = [];
             for (const a of taskAttachments) {
@@ -817,6 +812,7 @@ Optional list of any work you did not complete or that should be followed up. Om
           }
         }
 
+        if (this.sessions.get(task.id) !== managed || this.latestRunTokens.get(task.id) !== runToken) return;
         console.log(`[agent-manager] executing ${agentType} for task ${task.id}${agentAttachments?.length ? ` with ${agentAttachments.length} image(s)` : ''}`);
         const result = await session.execute(prompt, agentAttachments);
         console.log(`[agent-manager] ${agentType} ${result.status} for task ${task.id}${result.error ? `: ${result.error}` : ''}`);
@@ -825,7 +821,8 @@ Optional list of any work you did not complete or that should be followed up. Om
 
         // Primary completion path — status comes from the provider
         if (this.sessions.get(task.id) === managed && this.latestRunTokens.get(task.id) === runToken) {
-          this.sessions.delete(task.id);
+          // Keep this generation claimed while result persistence awaits. terminateOnce
+          // releases it only after terminal cleanup has been fenced.
           // On success, persist the agent-authored summary BEFORE the status
           // transition so the task-update broadcast carries it to clients.
           // Always write (extracted value or null) so a rerun can't leave a
@@ -866,8 +863,6 @@ Optional list of any work you did not complete or that should be followed up. Om
           timestamp: Date.now(),
         });
 
-        const entry = this.sessions.get(task.id);
-        if (entry === managed) this.sessions.delete(task.id);
         terminateOnce('failed', errorContent);
       } finally {
         clearTimeout(timeoutId);
@@ -881,6 +876,7 @@ Optional list of any work you did not complete or that should be followed up. Om
       console.error(`[agent-manager] unhandled error for task ${task.id}:`, err);
       terminateOnce('failed');
     });
+    return true;
   }
 
   async sendMessage(taskId: string, message: string, attachmentIds?: string[]): Promise<boolean> {
@@ -925,65 +921,68 @@ Optional list of any work you did not complete or that should be followed up. Om
     const { agentType } = entry;
     this.sessions.delete(taskId);
     if (this.latestRunTokens.get(taskId) === entry.runToken) this.latestRunTokens.delete(taskId);
+    this.terminatingTasks.add(taskId);
     // Mark as stopped so terminateOnce (from the catch block) won't double-broadcast
     this.stoppedTasks.add(taskId);
-    setTimeout(() => this.stoppedTasks.delete(taskId), STOPPED_TASK_TTL_MS);
+    const stoppedTaskExpiry = setTimeout(() => this.stoppedTasks.delete(taskId), STOPPED_TASK_TTL_MS);
+    stoppedTaskExpiry.unref?.();
 
-    (async () => {
+    try {
       try { await entry.taskScopedProvider?.stop(); } catch { /* ignore */ }
       try { await entry.session?.abort(); } catch { /* ignore */ }
       try { await entry.session?.destroy(); } catch { /* ignore */ }
-    })();
+      await entry.statusTransition?.catch(() => {});
 
-    this.emitEvent(taskId, {
-      id: uuid(), taskId, type: 'error',
-      content: 'Agent stopped by user.',
-      timestamp: Date.now(),
-      metadata: { agentType, duration, error: 'Agent stopped by user.' },
-    });
+      this.emitEvent(taskId, {
+        id: uuid(), taskId, type: 'error',
+        content: 'Agent stopped by user.',
+        timestamp: Date.now(),
+        metadata: { agentType, duration, error: 'Agent stopped by user.' },
+      });
 
-    // Broadcast agent_complete so WS listeners know the agent finished
-    broadcast({
-      type: 'agent_complete',
-      payload: {
-        taskId,
-        status: 'failed',
-        agentType,
-        duration,
-        eventCount: (await this.getEvents(taskId)).length,
-      },
-    });
+      // Broadcast agent_complete so WS listeners know the agent finished
+      let eventCount = 0;
+      try { eventCount = (await this.getEvents(taskId)).length; } catch { /* terminal cleanup must continue */ }
+      broadcast({
+        type: 'agent_complete',
+        payload: { taskId, status: 'failed', agentType, duration, eventCount },
+      });
 
-    // Clean up stale group queue entry if this task belongs to a running group
-    for (const [groupId, q] of this.groupQueues) {
-      if (q.runningTaskIds.delete(taskId)) {
-        q.failedTaskIds.add(taskId);
-        Promise.resolve(q.onChildComplete(taskId)).catch((err: unknown) =>
-          console.error('[group] onChildComplete failed:', err),
-        );
-        if (q.pendingTaskIds.length === 0 && q.runningTaskIds.size === 0) {
-          this.groupQueues.delete(groupId);
-        } else {
-          queueMicrotask(() => this.drainGroupQueue(groupId));
+      // Clean up stale group queue entry if this task belongs to a running group
+      for (const [groupId, q] of this.groupQueues) {
+        if (q.runningTaskIds.delete(taskId)) {
+          q.failedTaskIds.add(taskId);
+          Promise.resolve(q.onChildComplete(taskId)).catch((err: unknown) =>
+            console.error('[group] onChildComplete failed:', err),
+          );
+          if (q.pendingTaskIds.length === 0 && q.runningTaskIds.size === 0) {
+            this.groupQueues.delete(groupId);
+          } else {
+            queueMicrotask(() => this.drainGroupQueue(groupId));
+          }
+          break;
         }
-        break;
       }
+      return true;
+    } finally {
+      this.terminatingTasks.delete(taskId);
     }
-
-    return true;
   }
 
   isRunning(taskId: string): boolean {
-    return this.sessions.has(taskId);
+    return this.sessions.has(taskId) || this.terminatingTasks.has(taskId);
   }
 
   shutdownAll(): void {
     const entries = [...this.sessions.entries()];
     this.sessions.clear();
+    this.latestRunTokens.clear();
+    this.terminatingTasks.clear();
 
     for (const [, entry] of entries) {
       if (entry.timeoutId) clearTimeout(entry.timeoutId);
       (async () => {
+        try { await entry.taskScopedProvider?.stop(); } catch { /* ignore */ }
         try { await entry.session?.abort(); } catch { /* ignore */ }
         try { await entry.session?.destroy(); } catch { /* ignore */ }
       })();
@@ -1070,7 +1069,12 @@ Optional list of any work you did not complete or that should be followed up. Om
         }
       };
 
-      this.startAgent(task, wrappedStatusCb, q.makeWorktreeCallback(task));
+      const started = this.startAgent(task, wrappedStatusCb, q.makeWorktreeCallback(task));
+      if (!started) {
+        void wrappedStatusCb('failed').catch((err: unknown) =>
+          console.error('[group] failed to persist rejected child run:', err),
+        );
+      }
 
       // Start more if we haven't hit concurrency limit
       startNext();

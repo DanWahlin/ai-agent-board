@@ -151,7 +151,7 @@ export function createAgentRouter(
       }
     }
 
-    agentManager.startAgent(
+    const started = agentManager.startAgent(
       updated,
       async (status) => {
         if (status === 'complete' || status === 'failed') await repo.clearRun(task.id);
@@ -159,6 +159,13 @@ export function createAgentRouter(
       },
       makeWorktreeCallback(repo, task.id),
     );
+
+    if (!started) {
+      await repo.clearRun(task.id);
+      await makeStatusCallback(repo, task.id)('failed');
+      res.status(409).json({ error: 'agent lifecycle is still terminating; retry shortly' });
+      return;
+    }
 
     res.json(updated);
   }));
@@ -180,6 +187,7 @@ export function createAgentRouter(
       res.status(409).json({ error: 'no running agent for this task' });
       return;
     }
+    await repo.clearRun(task.id);
     const updated = await repo.update(task.id, { agentStatus: 'failed' });
     if (!updated) {
       res.status(404).json({ error: 'task not found' });

@@ -1,0 +1,170 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import type { Task } from '../../../shared/types.js';
+import { AgentManager } from '../src/services/agent-manager.js';
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function waitFor(predicate: () => boolean, message: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(message);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+function task(id: string): Task {
+  return {
+    id,
+    title: 'Lifecycle test',
+    description: 'Exercise lifecycle ordering.',
+    priority: 'medium',
+    columnId: 'in-progress',
+    agentStatus: 'planning',
+    createdAt: Date.now(),
+    projectId: 'project-test',
+    agentType: 'copilot',
+  };
+}
+
+function managerWithSession(session: Record<string, unknown>): AgentManager {
+  const manager = new AgentManager();
+  const internals = manager as unknown as {
+    providers: Map<string, unknown>;
+    availableAgents: Array<{ name: string; displayName: string; available: boolean }>;
+  };
+  internals.providers.set('copilot', {
+    displayName: 'Fake Copilot',
+    createSession: async () => session,
+  });
+  internals.availableAgents = [{ name: 'copilot', displayName: 'Fake Copilot', available: true }];
+  return manager;
+}
+
+test('terminal cleanup releases the run when event counting fails', async () => {
+  const statuses: string[] = [];
+  const manager = managerWithSession({
+    execute: async () => ({ status: 'complete' }),
+    abort: async () => {},
+    destroy: async () => {},
+    send: async () => {},
+  });
+  manager.getEvents = async () => { throw new Error('event store unavailable'); };
+
+  assert.equal(manager.startAgent(task('terminal-cleanup'), async (status) => { statuses.push(status); }), true);
+  await waitFor(() => statuses.includes('complete'), 'terminal status was not persisted');
+
+  assert.equal(manager.isRunning('terminal-cleanup'), false);
+  assert.equal(manager.startAgent(task('terminal-cleanup'), async () => {}), true);
+});
+
+test('a stop during attachment loading prevents stale execution', async () => {
+  const attachmentsRequested = deferred<void>();
+  const attachments = deferred<never[]>();
+  let executeCount = 0;
+  const manager = managerWithSession({
+    execute: async () => { executeCount += 1; return { status: 'complete' }; },
+    abort: async () => {},
+    destroy: async () => {},
+    send: async () => {},
+  });
+  manager.initAttachmentStore({
+    getByTaskId: async () => {
+      attachmentsRequested.resolve();
+      return attachments.promise;
+    },
+  } as never);
+
+  assert.equal(manager.startAgent(task('attachment-stop'), async () => {}), true);
+  await attachmentsRequested.promise;
+  const stopped = manager.stopAgent('attachment-stop');
+  attachments.resolve([]);
+  assert.equal(await stopped, true);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(executeCount, 0);
+  assert.equal(manager.isRunning('attachment-stop'), false);
+});
+
+test('a completed run stays claimed until result persistence and terminal status finish', async () => {
+  const persistenceStarted = deferred<void>();
+  const persistenceGate = deferred<void>();
+  const statuses: string[] = [];
+  const manager = managerWithSession({
+    execute: async () => ({ status: 'complete' }),
+    abort: async () => {},
+    destroy: async () => {},
+    send: async () => {},
+  });
+  manager.initEventPersistence({
+    update: async () => {
+      persistenceStarted.resolve();
+      await persistenceGate.promise;
+      return task('result-persistence');
+    },
+    insertEvent: async () => {},
+    getEventsByTaskId: async () => [],
+  } as never);
+
+  assert.equal(manager.startAgent(task('result-persistence'), async (status) => { statuses.push(status); }), true);
+  await persistenceStarted.promise;
+  assert.equal(manager.isRunning('result-persistence'), true);
+  assert.equal(manager.startAgent(task('result-persistence'), async () => {}), false);
+
+  persistenceGate.resolve();
+  await waitFor(() => statuses.includes('complete'), 'completion did not finish after persistence');
+  assert.equal(manager.isRunning('result-persistence'), false);
+});
+
+test('shutdown stops task-scoped providers before session teardown', async () => {
+  const calls: string[] = [];
+  const manager = new AgentManager();
+  const runToken = Symbol('shutdown');
+  const internals = manager as unknown as {
+    sessions: Map<string, unknown>;
+    latestRunTokens: Map<string, symbol>;
+  };
+  internals.sessions.set('shutdown', {
+    runToken,
+    startTime: Date.now(),
+    agentType: 'hermes',
+    taskScopedProvider: { stop: async () => { calls.push('provider'); } },
+    session: {
+      abort: async () => { calls.push('abort'); },
+      destroy: async () => { calls.push('destroy'); },
+    },
+  });
+  internals.latestRunTokens.set('shutdown', runToken);
+
+  manager.shutdownAll();
+  await waitFor(() => calls.length === 3, 'shutdown cleanup did not finish');
+  assert.deepEqual(calls, ['provider', 'abort', 'destroy']);
+  assert.equal(manager.isRunning('shutdown'), false);
+});
+
+test('termination is reported busy until stop cleanup finishes', async () => {
+  const executeResult = deferred<{ status: 'complete' }>();
+  const abortGate = deferred<void>();
+  let executing = false;
+  const manager = managerWithSession({
+    execute: async () => executeResult.promise,
+    abort: async () => abortGate.promise,
+    destroy: async () => {},
+    send: async () => {},
+  });
+
+  assert.equal(manager.startAgent(task('busy-stop'), async (status) => { if (status === 'executing') executing = true; }), true);
+  await waitFor(() => executing, 'session never entered executing');
+  const stopping = manager.stopAgent('busy-stop');
+  await waitFor(() => manager.isRunning('busy-stop'), 'terminating state was not visible');
+
+  assert.equal(manager.startAgent(task('busy-stop'), async () => {}), false);
+  abortGate.resolve();
+  assert.equal(await stopping, true);
+  assert.equal(manager.isRunning('busy-stop'), false);
+  executeResult.resolve({ status: 'complete' });
+});

@@ -603,6 +603,26 @@ export class AgentManager {
     // Launch the agent session asynchronously
     (async () => {
       let taskScopedProvider: AgentProvider | null = null;
+      const managed = this.sessions.get(task.id);
+      if (!managed) return;
+      const taskTimeoutMs = resolveTaskTimeoutMs(task);
+      const timeoutId = setTimeout(() => {
+        const entry = this.sessions.get(task.id);
+        if (!entry) return;
+        const timeoutMsg = `Agent timed out after ${Math.round(taskTimeoutMs / 60000)} minutes`;
+        console.warn(`[agent-manager] task ${task.id} timed out after ${taskTimeoutMs}ms`);
+        this.emitEvent(task.id, {
+          id: uuid(), taskId: task.id, type: 'error',
+          content: timeoutMsg,
+          timestamp: Date.now(),
+        });
+        this.sessions.delete(task.id);
+        entry.taskScopedProvider?.stop().catch(() => {});
+        entry.session?.abort().catch(() => {});
+        entry.session?.destroy().catch(() => {});
+        terminateOnce('failed', timeoutMsg);
+      }, taskTimeoutMs);
+      managed.timeoutId = timeoutId;
       try {
         const workingDirectory = worktreePath || task.repoPath || process.cwd();
         let activeProvider = provider;
@@ -616,7 +636,11 @@ export class AgentManager {
                 ?? '/var/lib/agentboard-worktrees',
             },
           });
+          const entry = this.sessions.get(task.id);
+          if (!entry) return;
+          entry.taskScopedProvider = taskScopedProvider;
           await taskScopedProvider.start();
+          if (!this.sessions.has(task.id)) return;
           activeProvider = taskScopedProvider;
         }
         const hasGit = fs.existsSync(path.join(workingDirectory, '.git'));
@@ -740,38 +764,13 @@ Optional list of any work you did not complete or that should be followed up. Om
           },
         });
 
-        this.sessions.set(task.id, {
-          session,
-          taskScopedProvider: taskScopedProvider ?? undefined,
-          startTime: sessionStartTime,
-          agentType,
-        });
+        const activeEntry = this.sessions.get(task.id);
+        if (!activeEntry) {
+          await session.destroy().catch(() => {});
+          return;
+        }
+        activeEntry.session = session;
         onStatusChange('executing');
-
-        // Timeout guard. A task override is persisted with the card so retries
-        // stay managed by Agent Board instead of escaping to a direct process.
-        const taskTimeoutMs = resolveTaskTimeoutMs(task);
-        const timeoutId = setTimeout(() => {
-          if (!this.sessions.has(task.id)) return;
-          const timeoutMsg = `Agent timed out after ${Math.round(taskTimeoutMs / 60000)} minutes`;
-          console.warn(`[agent-manager] task ${task.id} timed out after ${taskTimeoutMs}ms`);
-          this.emitEvent(task.id, {
-            id: uuid(), taskId: task.id, type: 'error',
-            content: timeoutMsg,
-            timestamp: Date.now(),
-          });
-          const entry = this.sessions.get(task.id);
-          if (entry) {
-            this.sessions.delete(task.id);
-            entry.taskScopedProvider?.stop().catch(() => {});
-            entry.session?.abort().catch(() => {});
-            entry.session?.destroy().catch(() => {});
-          }
-          terminateOnce('failed', timeoutMsg);
-        }, taskTimeoutMs);
-
-        const entry = this.sessions.get(task.id);
-        if (entry) entry.timeoutId = timeoutId;
 
         // Build prompt and execute — each provider returns a typed AgentResult
         const safeDescription = (task.description || '').replace(/[<>]/g, '');
@@ -844,6 +843,7 @@ Optional list of any work you did not complete or that should be followed up. Om
         if (entry) this.sessions.delete(task.id);
         terminateOnce('failed', errorContent);
       } finally {
+        clearTimeout(timeoutId);
         if (taskScopedProvider) {
           await taskScopedProvider.stop().catch((err: unknown) => {
             console.error(`[agent-manager] failed to stop task-scoped Hermes provider: ${errorMessage(err)}`);

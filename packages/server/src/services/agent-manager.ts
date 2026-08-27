@@ -123,6 +123,7 @@ export class AgentManager {
   private latestRunTokens = new Map<string, symbol>();
   private terminatingTasks = new Set<string>();
   private shuttingDown = false;
+  private pendingCleanups = new Set<Promise<unknown>>();
   private deletedTasks = new Set<string>();
   /** Tasks stopped by user — prevents duplicate agent_complete from terminateOnce */
   private stoppedTasks = new Set<string>();
@@ -558,17 +559,26 @@ export class AgentManager {
         this.terminatingTasks.delete(task.id);
       }
     };
+    const finishTermination = (status: 'complete' | 'failed', terminalError?: string) => {
+      const cleanup = terminateOnce(status, terminalError);
+      this.pendingCleanups.add(cleanup);
+      void cleanup.then(
+        () => this.pendingCleanups.delete(cleanup),
+        () => this.pendingCleanups.delete(cleanup),
+      );
+      return cleanup;
+    };
 
     const provider = this.providers.get(agentType);
     if (!provider) {
-      void terminateOnce('failed', `No provider registered for agent type: ${agentType}`);
+      void finishTermination('failed', `No provider registered for agent type: ${agentType}`);
       return true;
     }
 
     // Check if agent is available
     const agentInfo = this.availableAgents.find(a => a.name === agentType);
     if (!agentInfo?.available) {
-      void terminateOnce('failed', `Agent ${provider.displayName} is not available: ${agentInfo?.reason || 'unknown reason'}`);
+      void finishTermination('failed', `Agent ${provider.displayName} is not available: ${agentInfo?.reason || 'unknown reason'}`);
       return true;
     }
 
@@ -611,13 +621,13 @@ export class AgentManager {
           content: `Worktree setup failed: ${errorMessage(err)}`,
           timestamp: Date.now(),
         });
-        terminateOnce('failed', `Worktree setup failed: ${errorMessage(err)}`);
+        void finishTermination('failed', `Worktree setup failed: ${errorMessage(err)}`);
         return true;
       }
     }
 
     // Launch the agent session asynchronously
-    (async () => {
+    const lifecycle = (async () => {
       let taskScopedProvider: AgentProvider | null = null;
       const managed = sessionGeneration;
       if (!managed || this.sessions.get(task.id) !== managed || this.latestRunTokens.get(task.id) !== runToken) return;
@@ -641,7 +651,12 @@ export class AgentManager {
           entry.statusTransition,
         ]).then(() => undefined);
         entry.teardown = teardown;
-        void teardown.then(() => terminateOnce('failed', timeoutMsg));
+        const timeoutCleanup = teardown.then(() => finishTermination('failed', timeoutMsg));
+        this.pendingCleanups.add(timeoutCleanup);
+        void timeoutCleanup.then(
+          () => this.pendingCleanups.delete(timeoutCleanup),
+          () => this.pendingCleanups.delete(timeoutCleanup),
+        );
       }, taskTimeoutMs);
       managed.timeoutId = timeoutId;
       try {
@@ -859,7 +874,7 @@ Optional list of any work you did not complete or that should be followed up. Om
               if (managed.resultPersistence === persistence) managed.resultPersistence = undefined;
             }
           }
-          terminateOnce(result.status, result.error);
+          void finishTermination(result.status, result.error);
           session.destroy().catch(() => {});
         }
       } catch (err: unknown) {
@@ -880,7 +895,7 @@ Optional list of any work you did not complete or that should be followed up. Om
           timestamp: Date.now(),
         });
 
-        terminateOnce('failed', errorContent);
+        void finishTermination('failed', errorContent);
       } finally {
         clearTimeout(timeoutId);
         if (taskScopedProvider) {
@@ -891,8 +906,13 @@ Optional list of any work you did not complete or that should be followed up. Om
       }
     })().catch((err: unknown) => {
       console.error(`[agent-manager] unhandled error for task ${task.id}:`, err);
-      terminateOnce('failed');
+      void finishTermination('failed');
     });
+    this.pendingCleanups.add(lifecycle);
+    void lifecycle.then(
+      () => this.pendingCleanups.delete(lifecycle),
+      () => this.pendingCleanups.delete(lifecycle),
+    );
     return true;
   }
 
@@ -932,6 +952,9 @@ Optional list of any work you did not complete or that should be followed up. Om
   async stopAgent(taskId: string): Promise<boolean> {
     const entry = this.sessions.get(taskId);
     if (!entry) return false;
+    let resolveStopCleanup!: () => void;
+    const stopCleanup = new Promise<void>((resolve) => { resolveStopCleanup = resolve; });
+    this.pendingCleanups.add(stopCleanup);
 
     if (entry.timeoutId) clearTimeout(entry.timeoutId);
     const duration = Date.now() - entry.startTime;
@@ -984,6 +1007,8 @@ Optional list of any work you did not complete or that should be followed up. Om
       return true;
     } finally {
       this.terminatingTasks.delete(taskId);
+      resolveStopCleanup();
+      this.pendingCleanups.delete(stopCleanup);
     }
   }
 
@@ -1009,7 +1034,14 @@ Optional list of any work you did not complete or that should be followed up. Om
     const providerStops = [...this.providers.values()].map((provider) =>
       Promise.resolve().then(() => provider.stop()),
     );
-    await Promise.allSettled([...cleanupTasks, ...providerStops]);
+    await Promise.allSettled([
+      ...cleanupTasks,
+      ...providerStops,
+      ...this.pendingCleanups,
+    ]);
+    while (this.pendingCleanups.size > 0) {
+      await Promise.allSettled([...this.pendingCleanups]);
+    }
   }
 
   // ─── Group Queue ──────────────────────────────────────────────────

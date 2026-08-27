@@ -222,6 +222,32 @@ test('shutdown rejects new sessions after teardown begins', async () => {
   await shutdown;
 });
 
+test('shutdown waits for an already-running stop cleanup', async () => {
+  const executeResult = deferred<{ status: 'complete' }>();
+  const abortGate = deferred<void>();
+  let executing = false;
+  let shutdownFinished = false;
+  const manager = managerWithSession({
+    execute: async () => executeResult.promise,
+    abort: async () => abortGate.promise,
+    destroy: async () => {},
+    send: async () => {},
+  });
+
+  assert.equal(manager.startAgent(task('shutdown-during-stop'), async (status) => { if (status === 'executing') executing = true; }), true);
+  await waitFor(() => executing, 'session never entered executing');
+  const stopping = manager.stopAgent('shutdown-during-stop');
+  const shutdown = manager.shutdownAll().then(() => { shutdownFinished = true; });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(shutdownFinished, false);
+
+  abortGate.resolve();
+  executeResult.resolve({ status: 'complete' });
+  assert.equal(await stopping, true);
+  await shutdown;
+  assert.equal(shutdownFinished, true);
+});
+
 test('shutdown promise remains pending until task cleanup settles', async () => {
   const stopGate = deferred<void>();
   let finished = false;

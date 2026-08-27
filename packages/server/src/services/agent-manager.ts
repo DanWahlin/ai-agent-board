@@ -1040,7 +1040,9 @@ Optional list of any work you did not complete or that should be followed up. Om
       ...this.pendingCleanups,
     ]);
     while (this.pendingCleanups.size > 0) {
-      await Promise.allSettled([...this.pendingCleanups]);
+      const batch = [...this.pendingCleanups];
+      await Promise.allSettled(batch);
+      for (const cleanup of batch) this.pendingCleanups.delete(cleanup);
     }
   }
 

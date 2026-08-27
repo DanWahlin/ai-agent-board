@@ -55,6 +55,10 @@ const DELETED_TASK_TTL_MS = 60_000;
 const STREAM_BUFFER_FLUSH_MS = 40;
 const STOPPED_TASK_TTL_MS = 30_000;
 
+function usesTaskScopedHermesSandbox(): boolean {
+  return ['1', 'true', 'yes', 'on'].includes((process.env.HERMES_SANDBOXED ?? '').trim().toLowerCase());
+}
+
 // Upper bound on accumulated assistant prose kept for summary extraction.
 // We only need the tail (the final <task-summary> block), so cap memory use.
 const MAX_SUMMARY_BUFFER = 64_000;
@@ -181,6 +185,9 @@ export class AgentManager {
     for (const info of available) {
       const provider = this.providers.get(info.name);
       if (provider) {
+        // A sandboxed Hermes process must receive one exact worktree at spawn
+        // time. Start it lazily per task instead of sharing one mount namespace.
+        if (info.name === 'hermes' && usesTaskScopedHermesSandbox()) continue;
         try {
           await provider.start();
         } catch (err: unknown) {
@@ -203,6 +210,7 @@ export class AgentManager {
       if (!info.available || !provider) continue;
       const wasAvailable = this.availableAgents.find((item) => item.name === info.name)?.available;
       if (wasAvailable) continue;
+      if (info.name === 'hermes' && usesTaskScopedHermesSandbox()) continue;
       try {
         await provider.start();
       } catch (err: unknown) {
@@ -593,8 +601,23 @@ export class AgentManager {
 
     // Launch the agent session asynchronously
     (async () => {
+      let taskScopedProvider: AgentProvider | null = null;
       try {
         const workingDirectory = worktreePath || task.repoPath || process.cwd();
+        let activeProvider = provider;
+        if (agentType === 'hermes' && usesTaskScopedHermesSandbox()) {
+          if (!worktreePath) throw new Error('Sandboxed Hermes requires a managed task worktree');
+          taskScopedProvider = new HermesProvider({
+            command: process.env.HERMES_COMMAND?.trim() || 'hermes',
+            env: {
+              HERMES_SANDBOX_WORKTREE: worktreePath,
+              HERMES_SANDBOX_WORKTREE_ROOT: process.env.HERMES_SANDBOX_WORKTREE_ROOT
+                ?? '/var/lib/agentboard-worktrees',
+            },
+          });
+          await taskScopedProvider.start();
+          activeProvider = taskScopedProvider;
+        }
         const hasGit = fs.existsSync(path.join(workingDirectory, '.git'));
         // Sanitize task content to prevent prompt injection via </context> breakout
         const safeTitle = task.title.replace(/[<>]/g, '');
@@ -629,7 +652,7 @@ Optional list of any work you did not complete or that should be followed up. Om
         let summaryBuffer = '';
         let resultBuffer = '';
 
-        const session = await provider.createSession({
+        const session = await activeProvider.createSession({
           contextId: task.id,
           workingDirectory,
           repoPath: task.repoPath,
@@ -813,6 +836,12 @@ Optional list of any work you did not complete or that should be followed up. Om
         const entry = this.sessions.get(task.id);
         if (entry) this.sessions.delete(task.id);
         terminateOnce('failed', errorContent);
+      } finally {
+        if (taskScopedProvider) {
+          await taskScopedProvider.stop().catch((err: unknown) => {
+            console.error(`[agent-manager] failed to stop task-scoped Hermes provider: ${errorMessage(err)}`);
+          });
+        }
       }
     })().catch((err: unknown) => {
       console.error(`[agent-manager] unhandled error for task ${task.id}:`, err);

@@ -1,34 +1,63 @@
 #!/bin/sh
 set -eu
-if [ "${1:-}" = "--sandbox-probe" ]; then
-  set -- /bin/sh -c 'test ! -e /root/.ssh; test ! -e /etc/ai-agent-board.env; test ! -e /etc/agentmic; ! touch /root/projects/agent-mic/.agentmic-sandbox-probe 2>/dev/null; p=/tmp/agentmic-sandbox-probe-$$; touch "$p"; rm "$p"; test "$(sed -n "s/^CapEff:[[:space:]]*//p" /proc/self/status)" = "0000000000000000"; echo sandbox-probe=passed'
-else
-  set -- /usr/local/lib/hermes-agent/venv/bin/hermes "$@"
+
+needs_worktree=true
+case "${1:-}" in
+  --version|-V|version)
+    needs_worktree=false
+    set -- /usr/local/lib/hermes-agent/venv/bin/hermes "$@"
+    ;;
+  --sandbox-probe)
+    set -- /bin/sh -c 'test ! -e /root/.ssh; test ! -e /etc/ai-agent-board.env; test ! -e /etc/agentmic; ! touch /root/projects/agent-mic/.agentmic-sandbox-probe 2>/dev/null; test -w "$HERMES_SANDBOX_WORKTREE"; test "$(find "$HERMES_SANDBOX_WORKTREE_ROOT" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1; p=/tmp/agentmic-sandbox-probe-$$; touch "$p"; rm "$p"; test "$(sed -n "s/^CapEff:[[:space:]]*//p" /proc/self/status)" = "0000000000000000"; echo sandbox-probe=passed'
+    ;;
+  *) set -- /usr/local/lib/hermes-agent/venv/bin/hermes "$@" ;;
+esac
+
+worktree=''
+if [ "$needs_worktree" = true ]; then
+  root=$(readlink -f -- "${HERMES_SANDBOX_WORKTREE_ROOT:-/var/lib/agentboard-worktrees}")
+  worktree=$(readlink -f -- "${HERMES_SANDBOX_WORKTREE:?task-scoped Hermes sandbox requires HERMES_SANDBOX_WORKTREE}")
+  [ -d "$root" ] && [ -d "$worktree" ]
+  [ "$(dirname -- "$worktree")" = "$root" ]
+  case "$(basename -- "$worktree")" in
+    agentboard-*) ;;
+    *) echo 'invalid task-scoped Hermes worktree' >&2; exit 64 ;;
+  esac
+  export HERMES_SANDBOX_WORKTREE="$worktree"
+  export HERMES_SANDBOX_WORKTREE_ROOT="$root"
 fi
-exec /usr/bin/bwrap \
-  --die-with-parent --new-session \
-  --unshare-pid --unshare-ipc --unshare-uts --unshare-cgroup \
-  --cap-drop ALL \
-  --dir /etc --dir /root --dir /root/projects --dir /home --dir /var --dir /var/lib \
-  --ro-bind /usr /usr \
-  --symlink usr/bin /bin --symlink usr/sbin /sbin --symlink usr/lib /lib --symlink usr/lib64 /lib64 \
-  --ro-bind /etc/ssl /etc/ssl \
-  --ro-bind /etc/ca-certificates /etc/ca-certificates \
-  --ro-bind /etc/resolv.conf /etc/resolv.conf \
-  --ro-bind /etc/hosts /etc/hosts \
-  --ro-bind /etc/nsswitch.conf /etc/nsswitch.conf \
-  --ro-bind /etc/passwd /etc/passwd \
-  --ro-bind /etc/group /etc/group \
-  --ro-bind /etc/ld.so.cache /etc/ld.so.cache \
-  --ro-bind /root/projects/agent-mic /root/projects/agent-mic \
-  --ro-bind /root/projects/ai-agent-board /root/projects/ai-agent-board \
-  --tmpfs /tmp \
-  --bind /var/lib/agentboard-worktrees /var/lib/agentboard-worktrees \
-  --bind /var/lib/agentmic-hermes-sandbox /home/hermes \
-  --proc /proc --dev /dev --tmpfs /run \
-  --setenv HOME /home/hermes \
-  --setenv HERMES_HOME /home/hermes/.hermes/profiles/agentmic \
-  --setenv XDG_CONFIG_HOME /home/hermes/.config \
-  --setenv XDG_DATA_HOME /home/hermes/.local/share \
-  --setenv XDG_CACHE_HOME /home/hermes/.cache \
-  "$@"
+
+run_sandbox() {
+  exec /usr/bin/bwrap \
+    --die-with-parent --new-session \
+    --unshare-pid --unshare-ipc --unshare-uts --unshare-cgroup \
+    --cap-drop ALL \
+    --dir /etc --dir /root --dir /root/projects --dir /home --dir /var --dir /var/lib --dir /var/lib/agentboard-worktrees \
+    --ro-bind /usr /usr \
+    --symlink usr/bin /bin --symlink usr/sbin /sbin --symlink usr/lib /lib --symlink usr/lib64 /lib64 \
+    --ro-bind /etc/ssl /etc/ssl \
+    --ro-bind /etc/ca-certificates /etc/ca-certificates \
+    --ro-bind /etc/resolv.conf /etc/resolv.conf \
+    --ro-bind /etc/hosts /etc/hosts \
+    --ro-bind /etc/nsswitch.conf /etc/nsswitch.conf \
+    --ro-bind /etc/passwd /etc/passwd \
+    --ro-bind /etc/group /etc/group \
+    --ro-bind /etc/ld.so.cache /etc/ld.so.cache \
+    --ro-bind /root/projects/agent-mic /root/projects/agent-mic \
+    --ro-bind /root/projects/ai-agent-board /root/projects/ai-agent-board \
+    --tmpfs /tmp \
+    --bind /var/lib/agentmic-hermes-sandbox /home/hermes \
+    --proc /proc --dev /dev --tmpfs /run \
+    --setenv HOME /home/hermes \
+    --setenv HERMES_HOME /home/hermes/.hermes/profiles/agentmic \
+    --setenv XDG_CONFIG_HOME /home/hermes/.config \
+    --setenv XDG_DATA_HOME /home/hermes/.local/share \
+    --setenv XDG_CACHE_HOME /home/hermes/.cache \
+    "$@"
+}
+
+if [ "$needs_worktree" = true ]; then
+  run_sandbox --bind "$worktree" "$worktree" "$@"
+else
+  run_sandbox "$@"
+fi

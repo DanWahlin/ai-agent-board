@@ -8,12 +8,14 @@ case "${1:-}" in
     set -- /usr/local/lib/hermes-agent/venv/bin/hermes "$@"
     ;;
   --sandbox-probe)
-    set -- /bin/sh -c 'test ! -e /root/.ssh; test ! -e /etc/ai-agent-board.env; test ! -e /etc/agentmic; test ! -e /root/projects/agent-mic; test ! -e /root/projects/ai-agent-board; test -w "$HERMES_SANDBOX_WORKTREE"; test "$(find "$HERMES_SANDBOX_WORKTREE_ROOT" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1; p=/tmp/agentmic-sandbox-probe-$$; touch "$p"; rm "$p"; test "$(sed -n "s/^CapEff:[[:space:]]*//p" /proc/self/status)" = "0000000000000000"; echo sandbox-probe=passed'
+    set -- /bin/sh -c 'test ! -e /root/.ssh; test ! -e /etc/ai-agent-board.env; test ! -e /etc/agentmic; test -d "$HERMES_SANDBOX_REPO_ROOT/.git"; test ! -e "$HERMES_SANDBOX_REPO_ROOT/package.json"; test "$(find /root/projects -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1; test "$(find "$HERMES_SANDBOX_REPO_ROOT" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1; test -w "$HERMES_SANDBOX_WORKTREE"; test "$(find "$HERMES_SANDBOX_WORKTREE_ROOT" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1; git -C "$HERMES_SANDBOX_WORKTREE" status --short >/dev/null; p=/tmp/agentmic-sandbox-probe-$$; touch "$p"; rm "$p"; test "$(sed -n "s/^CapEff:[[:space:]]*//p" /proc/self/status)" = "0000000000000000"; echo sandbox-probe=passed'
     ;;
   *) set -- /usr/local/lib/hermes-agent/venv/bin/hermes "$@" ;;
 esac
 
 worktree=''
+repo_root=''
+common_git=''
 if [ "$needs_worktree" = true ]; then
   root=$(readlink -f -- "${HERMES_SANDBOX_WORKTREE_ROOT:-/var/lib/agentboard-worktrees}")
   worktree=$(readlink -f -- "${HERMES_SANDBOX_WORKTREE:?task-scoped Hermes sandbox requires HERMES_SANDBOX_WORKTREE}")
@@ -23,8 +25,18 @@ if [ "$needs_worktree" = true ]; then
     agentboard-*) ;;
     *) echo 'invalid task-scoped Hermes worktree' >&2; exit 64 ;;
   esac
+  gitdir=$(sed -n 's/^gitdir: //p' "$worktree/.git")
+  [ -n "$gitdir" ] && [ "$(printf '%s\n' "$gitdir" | wc -l)" -eq 1 ]
+  gitdir=$(readlink -f -- "$gitdir")
+  common_git=$(readlink -f -- "$gitdir/../..")
+  repo_root=$(dirname -- "$common_git")
+  [ "$(basename -- "$common_git")" = .git ]
+  [ "$(dirname -- "$gitdir")" = "$common_git/worktrees" ]
+  [ "$(basename -- "$gitdir")" = "$(basename -- "$worktree")" ]
+  [ "$(dirname -- "$repo_root")" = /root/projects ]
   export HERMES_SANDBOX_WORKTREE="$worktree"
   export HERMES_SANDBOX_WORKTREE_ROOT="$root"
+  export HERMES_SANDBOX_REPO_ROOT="$repo_root"
 fi
 
 run_sandbox() {
@@ -55,7 +67,7 @@ run_sandbox() {
 }
 
 if [ "$needs_worktree" = true ]; then
-  run_sandbox --bind "$worktree" "$worktree" "$@"
+  run_sandbox --dir "$repo_root" --ro-bind "$common_git" "$common_git" --tmpfs "$common_git/worktrees" --dir "$gitdir" --ro-bind "$gitdir" "$gitdir" --bind "$worktree" "$worktree" "$@"
 else
   run_sandbox "$@"
 fi

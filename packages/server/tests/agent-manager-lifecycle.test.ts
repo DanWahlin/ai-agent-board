@@ -210,15 +210,42 @@ test('synchronous timeout teardown errors cannot wedge admission', async () => {
   }
 });
 
-test('shutdown rejects new sessions after teardown begins', () => {
+test('shutdown rejects new sessions after teardown begins', async () => {
   const manager = managerWithSession({
     execute: async () => ({ status: 'complete' }),
     abort: async () => {},
     destroy: async () => {},
     send: async () => {},
   });
-  manager.shutdownAll();
+  const shutdown = manager.shutdownAll();
   assert.equal(manager.startAgent(task('after-shutdown'), async () => {}), false);
+  await shutdown;
+});
+
+test('shutdown promise remains pending until task cleanup settles', async () => {
+  const stopGate = deferred<void>();
+  let finished = false;
+  const manager = new AgentManager();
+  const runToken = Symbol('shutdown-wait');
+  const internals = manager as unknown as {
+    sessions: Map<string, unknown>;
+    latestRunTokens: Map<string, symbol>;
+  };
+  internals.sessions.set('shutdown-wait', {
+    runToken,
+    startTime: Date.now(),
+    agentType: 'hermes',
+    taskScopedProvider: { stop: async () => stopGate.promise },
+    session: { abort: async () => {}, destroy: async () => {} },
+  });
+  internals.latestRunTokens.set('shutdown-wait', runToken);
+
+  const shutdown = manager.shutdownAll().then(() => { finished = true; });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(finished, false);
+  stopGate.resolve();
+  await shutdown;
+  assert.equal(finished, true);
 });
 
 test('shutdown stops task-scoped providers before session teardown', async () => {
@@ -241,8 +268,9 @@ test('shutdown stops task-scoped providers before session teardown', async () =>
   });
   internals.latestRunTokens.set('shutdown', runToken);
 
-  manager.shutdownAll();
+  const shutdown = manager.shutdownAll();
   await waitFor(() => calls.length === 3, 'shutdown cleanup did not finish');
+  await shutdown;
   assert.deepEqual(calls, ['provider', 'abort', 'destroy']);
   assert.equal(manager.isRunning('shutdown'), false);
 });

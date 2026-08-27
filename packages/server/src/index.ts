@@ -240,18 +240,23 @@ const agentManager = new AgentManager();
   });
 
   // Graceful shutdown
-  function shutdown() {
+  let shutdownStarted = false;
+  async function shutdown() {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
     console.log('[server] shutting down...');
     clearInterval(dispatchInterval);
-    agentManager.shutdownAll();
-    try { cleanupDb(); } catch (err) { console.error('[server] db cleanup error:', err); }
-    server.close(() => process.exit(0));
-    setTimeout(() => {
+    const forceExit = setTimeout(() => {
       console.warn('[server] force exit after timeout');
       process.exit(1);
     }, 5_000).unref();
+    await agentManager.shutdownAll();
+    try { cleanupDb(); } catch (err) { console.error('[server] db cleanup error:', err); }
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    clearTimeout(forceExit);
+    process.exit(0);
   }
 
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', () => { void shutdown(); });
+  process.on('SIGINT', () => { void shutdown(); });
 })();

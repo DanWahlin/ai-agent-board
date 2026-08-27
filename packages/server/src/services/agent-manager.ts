@@ -991,27 +991,25 @@ Optional list of any work you did not complete or that should be followed up. Om
     return this.sessions.has(taskId) || this.terminatingTasks.has(taskId);
   }
 
-  shutdownAll(): void {
+  async shutdownAll(): Promise<void> {
     this.shuttingDown = true;
     const entries = [...this.sessions.entries()];
     this.sessions.clear();
     this.latestRunTokens.clear();
     this.terminatingTasks.clear();
 
-    for (const [, entry] of entries) {
+    const cleanupTasks = entries.map(async ([, entry]) => {
       if (entry.timeoutId) clearTimeout(entry.timeoutId);
-      (async () => {
-        try { await entry.taskScopedProvider?.stop(); } catch { /* ignore */ }
-        try { await entry.session?.abort(); } catch { /* ignore */ }
-        try { await entry.session?.destroy(); } catch { /* ignore */ }
-        await entry.resultPersistence?.catch(() => {});
-        await entry.teardown?.catch(() => {});
-      })();
-    }
-
-    for (const provider of this.providers.values()) {
-      provider.stop().catch(() => {});
-    }
+      try { await entry.taskScopedProvider?.stop(); } catch { /* ignore */ }
+      try { await entry.session?.abort(); } catch { /* ignore */ }
+      try { await entry.session?.destroy(); } catch { /* ignore */ }
+      await entry.resultPersistence?.catch(() => {});
+      await entry.teardown?.catch(() => {});
+    });
+    const providerStops = [...this.providers.values()].map((provider) =>
+      Promise.resolve().then(() => provider.stop()),
+    );
+    await Promise.allSettled([...cleanupTasks, ...providerStops]);
   }
 
   // ─── Group Queue ──────────────────────────────────────────────────

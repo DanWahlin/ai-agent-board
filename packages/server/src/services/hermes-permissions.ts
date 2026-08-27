@@ -8,8 +8,10 @@ import type { AgentSessionHooks } from '@codewithdan/agent-sdk-core';
 export function hermesPermissionHooks(
   agentType: string | undefined,
   configured: string | undefined,
+  sandboxed: string | undefined,
 ): AgentSessionHooks | undefined {
-  if (agentType !== 'hermes' || !['1', 'true', 'yes', 'on'].includes((configured ?? '').trim().toLowerCase())) {
+  const enabled = (value: string | undefined) => ['1', 'true', 'yes', 'on'].includes((value ?? '').trim().toLowerCase());
+  if (agentType !== 'hermes' || !enabled(configured) || !enabled(sandboxed)) {
     return undefined;
   }
   return {

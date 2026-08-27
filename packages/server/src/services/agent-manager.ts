@@ -634,7 +634,11 @@ Optional list of any work you did not complete or that should be followed up. Om
           workingDirectory,
           repoPath: task.repoPath,
           systemPrompt,
-          hooks: hermesPermissionHooks(task.agentType, process.env.HERMES_AUTO_APPROVE_TOOLS),
+          hooks: hermesPermissionHooks(
+            task.agentType,
+            process.env.HERMES_AUTO_APPROVE_TOOLS,
+            process.env.HERMES_SANDBOXED,
+          ),
           onEvent: (coreEvent: CoreAgentEvent) => {
             const metadata: Record<string, unknown> = { ...coreEvent.metadata };
             let eventType = coreEvent.type;

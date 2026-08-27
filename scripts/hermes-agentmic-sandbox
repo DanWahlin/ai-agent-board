@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+if [ "${1:-}" = "--sandbox-probe" ]; then
+  set -- /bin/sh -c 'test ! -e /root/.ssh; test ! -e /etc/ai-agent-board.env; test ! -e /etc/agentmic; ! touch /root/projects/agent-mic/.agentmic-sandbox-probe 2>/dev/null; p=/tmp/agentmic-sandbox-probe-$$; touch "$p"; rm "$p"; test "$(sed -n "s/^CapEff:[[:space:]]*//p" /proc/self/status)" = "0000000000000000"; echo sandbox-probe=passed'
+else
+  set -- /usr/local/lib/hermes-agent/venv/bin/hermes "$@"
+fi
+exec /usr/bin/bwrap \
+  --die-with-parent --new-session \
+  --unshare-pid --unshare-ipc --unshare-uts --unshare-cgroup \
+  --cap-drop ALL \
+  --dir /etc --dir /root --dir /root/projects --dir /home --dir /var --dir /var/lib \
+  --ro-bind /usr /usr \
+  --symlink usr/bin /bin --symlink usr/sbin /sbin --symlink usr/lib /lib --symlink usr/lib64 /lib64 \
+  --ro-bind /etc/ssl /etc/ssl \
+  --ro-bind /etc/ca-certificates /etc/ca-certificates \
+  --ro-bind /etc/resolv.conf /etc/resolv.conf \
+  --ro-bind /etc/hosts /etc/hosts \
+  --ro-bind /etc/nsswitch.conf /etc/nsswitch.conf \
+  --ro-bind /etc/passwd /etc/passwd \
+  --ro-bind /etc/group /etc/group \
+  --ro-bind /etc/ld.so.cache /etc/ld.so.cache \
+  --ro-bind /root/projects /root/projects \
+  --bind /tmp /tmp \
+  --bind /var/lib/agentmic-hermes-sandbox /home/hermes \
+  --proc /proc --dev /dev --tmpfs /run \
+  --setenv HOME /home/hermes \
+  --setenv HERMES_HOME /home/hermes/.hermes/profiles/agentmic \
+  --setenv XDG_CONFIG_HOME /home/hermes/.config \
+  --setenv XDG_DATA_HOME /home/hermes/.local/share \
+  --setenv XDG_CACHE_HOME /home/hermes/.cache \
+  "$@"

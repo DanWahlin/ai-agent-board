@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { Task, ExecutionAttempt, AgentEvent } from '../types.js';
 import type { TaskRepository } from '../repositories/types.js';
 import type { ProjectRepository } from '../repositories/project-types.js';
@@ -97,7 +97,7 @@ function generateBranchName(key: string, title: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 40) || 'task';
-  const suffix = key.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10).toLowerCase() || Date.now().toString(36);
+  const suffix = createHash('sha256').update(key).digest('hex').slice(0, 12);
   return `agent/${slug}-${suffix}`;
 }
 

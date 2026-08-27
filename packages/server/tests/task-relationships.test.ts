@@ -186,13 +186,18 @@ test('orchestration persists distinct attempts, replays continuations, and track
     const messages: Array<[string, string]> = [];
     const manager = { ...agents, sendMessage: async (taskId: string, message: string) => { messages.push([taskId, message]); return true; } } as unknown as AgentManager;
     await withApi(repo, async (base) => {
-      let response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'new-work-1' }, body: JSON.stringify({ project: 'alpha', agent: 'hermes', title: 'New work', relatedItem: 'existing', autoStart: false, provenance: { hermesTaskId: 'hermes-parent-1' } }) });
+      let response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'agentmic:shared-prefix-one' }, body: JSON.stringify({ project: 'alpha', agent: 'hermes', title: 'New work', relatedItem: 'existing', autoStart: false, provenance: { hermesTaskId: 'hermes-parent-1' } }) });
       assert.equal(response.status, 201);
       const created = await response.json() as { task: Task; attempt: ExecutionAttempt };
       assert.ok(created.attempt.id);
       assert.equal(created.task.provenance?.sourceTask, 'hermes-parent-1');
       assert.equal(JSON.parse(created.attempt.requestSnapshot).provenance.sourceTask, 'hermes-parent-1');
       assert.deepEqual((await repo.getRelationships(created.task.id)).map((relation) => relation.relatedTaskId), ['existing']);
+
+      response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'agentmic:shared-prefix-two' }, body: JSON.stringify({ project: 'alpha', agent: 'hermes', title: 'New work', autoStart: false }) });
+      assert.equal(response.status, 201);
+      const sameTitle = await response.json() as { task: Task };
+      assert.notEqual(sameTitle.task.branchName, created.task.branchName);
 
       response = await fetch(`${base}/api/orchestrations`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'continue-1' }, body: JSON.stringify({ project: 'project-a', task: 'Existing work', description: 'Continue this work', autoStart: false }) });
       assert.equal(response.status, 202);
@@ -215,7 +220,7 @@ test('orchestration persists distinct attempts, replays continuations, and track
       response = await fetch(`${base}/api/orchestrations/existing`);
       assert.equal(response.status, 200);
       assert.equal(((await response.json()) as { contract: { attemptId: string } }).contract.attemptId, continued.attempt.id);
-      assert.equal(await repo.count(), 3);
+      assert.equal(await repo.count(), 4);
     }, manager);
   } finally { db.close(); }
 });

@@ -40,6 +40,7 @@ function loadAttachmentAsBase64(filePath: string, displayName: string, mimeType:
 
 interface ManagedSession {
   session?: AgentSession;
+  taskScopedProvider?: AgentProvider;
   timeoutId?: ReturnType<typeof setTimeout>;
   startTime: number;
   agentType: AgentType;
@@ -739,7 +740,12 @@ Optional list of any work you did not complete or that should be followed up. Om
           },
         });
 
-        this.sessions.set(task.id, { session, startTime: sessionStartTime, agentType });
+        this.sessions.set(task.id, {
+          session,
+          taskScopedProvider: taskScopedProvider ?? undefined,
+          startTime: sessionStartTime,
+          agentType,
+        });
         onStatusChange('executing');
 
         // Timeout guard. A task override is persisted with the card so retries
@@ -757,6 +763,7 @@ Optional list of any work you did not complete or that should be followed up. Om
           const entry = this.sessions.get(task.id);
           if (entry) {
             this.sessions.delete(task.id);
+            entry.taskScopedProvider?.stop().catch(() => {});
             entry.session?.abort().catch(() => {});
             entry.session?.destroy().catch(() => {});
           }
@@ -895,6 +902,7 @@ Optional list of any work you did not complete or that should be followed up. Om
     setTimeout(() => this.stoppedTasks.delete(taskId), STOPPED_TASK_TTL_MS);
 
     (async () => {
+      try { await entry.taskScopedProvider?.stop(); } catch { /* ignore */ }
       try { await entry.session?.abort(); } catch { /* ignore */ }
       try { await entry.session?.destroy(); } catch { /* ignore */ }
     })();

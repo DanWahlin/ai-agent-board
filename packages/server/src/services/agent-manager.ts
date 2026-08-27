@@ -39,6 +39,7 @@ function loadAttachmentAsBase64(filePath: string, displayName: string, mimeType:
 }
 
 interface ManagedSession {
+  runToken: symbol;
   session?: AgentSession;
   taskScopedProvider?: AgentProvider;
   timeoutId?: ReturnType<typeof setTimeout>;
@@ -116,6 +117,8 @@ interface GroupQueue {
 export class AgentManager {
   private providers = new Map<AgentType, AgentProvider>();
   private sessions = new Map<string, ManagedSession>();
+  private latestRunTokens = new Map<string, symbol>();
+  private terminatingTasks = new Set<string>();
   private deletedTasks = new Set<string>();
   /** Tasks stopped by user — prevents duplicate agent_complete from terminateOnce */
   private stoppedTasks = new Set<string>();
@@ -494,12 +497,13 @@ export class AgentManager {
     onStatusChange: (status: Task['agentStatus']) => void | Promise<void>,
     onWorktreeCreated?: (worktreePath: string) => void | Promise<void>,
   ): void {
-    if (this.sessions.has(task.id)) return;
+    if (this.sessions.has(task.id) || this.terminatingTasks.has(task.id)) return;
 
     const agentType = task.agentType || 'copilot';
     const sessionStartTime = Date.now();
     let terminated = false;
     let sessionGeneration: ManagedSession | undefined;
+    const runToken = Symbol(task.id);
 
     // Clear any prior run's summary so a rerun never displays a stale result
     // (e.g. if this run fails before producing a new summary).
@@ -509,13 +513,14 @@ export class AgentManager {
     const terminateOnce = async (status: 'complete' | 'failed', errorMessage?: string) => {
       if (terminated) return;
       const entry = this.sessions.get(task.id);
-      if (sessionGeneration && entry && entry !== sessionGeneration) {
+      if (sessionGeneration && this.latestRunTokens.get(task.id) !== runToken) {
         terminated = true;
         return;
       }
       // If the task was stopped by the user, stopAgent already handled cleanup
       if (this.stoppedTasks.has(task.id)) { terminated = true; return; }
       terminated = true;
+      this.terminatingTasks.add(task.id);
       if (entry?.timeoutId) clearTimeout(entry.timeoutId);
       if (entry && (!sessionGeneration || entry === sessionGeneration)) this.sessions.delete(task.id);
       const duration = Date.now() - sessionStartTime;
@@ -537,6 +542,12 @@ export class AgentManager {
         });
       }
 
+      const eventCount = (await this.getEvents(task.id)).length;
+      if (sessionGeneration && this.latestRunTokens.get(task.id) !== runToken) {
+        this.terminatingTasks.delete(task.id);
+        return;
+      }
+
       // Item 2: Broadcast agent_complete WS event
       broadcast({
         type: 'agent_complete',
@@ -545,11 +556,16 @@ export class AgentManager {
           status,
           agentType,
           duration,
-          eventCount: (await this.getEvents(task.id)).length,
+          eventCount,
         },
       });
 
-      onStatusChange(status);
+      try {
+        await onStatusChange(status);
+      } finally {
+        if (this.latestRunTokens.get(task.id) === runToken) this.latestRunTokens.delete(task.id);
+        this.terminatingTasks.delete(task.id);
+      }
     };
 
     const provider = this.providers.get(agentType);
@@ -567,7 +583,8 @@ export class AgentManager {
 
     // Synchronous placeholder to prevent duplicate starts during async session creation
     this.stoppedTasks.delete(task.id);
-    sessionGeneration = { startTime: sessionStartTime, agentType };
+    sessionGeneration = { runToken, startTime: sessionStartTime, agentType };
+    this.latestRunTokens.set(task.id, runToken);
     this.sessions.set(task.id, sessionGeneration);
 
     // Set up worktree if configured
@@ -612,11 +629,11 @@ export class AgentManager {
     (async () => {
       let taskScopedProvider: AgentProvider | null = null;
       const managed = sessionGeneration;
-      if (!managed || this.sessions.get(task.id) !== managed) return;
+      if (!managed || this.sessions.get(task.id) !== managed || this.latestRunTokens.get(task.id) !== runToken) return;
       const taskTimeoutMs = resolveTaskTimeoutMs(task);
       const timeoutId = setTimeout(() => {
         const entry = this.sessions.get(task.id);
-        if (entry !== managed) return;
+        if (entry !== managed || this.latestRunTokens.get(task.id) !== runToken) return;
         const timeoutMsg = `Agent timed out after ${Math.round(taskTimeoutMs / 60000)} minutes`;
         console.warn(`[agent-manager] task ${task.id} timed out after ${taskTimeoutMs}ms`);
         this.emitEvent(task.id, {
@@ -645,10 +662,10 @@ export class AgentManager {
             },
           });
           const entry = this.sessions.get(task.id);
-          if (entry !== managed) return;
+          if (entry !== managed || this.latestRunTokens.get(task.id) !== runToken) return;
           entry.taskScopedProvider = taskScopedProvider;
           await taskScopedProvider.start();
-          if (this.sessions.get(task.id) !== managed) return;
+          if (this.sessions.get(task.id) !== managed || this.latestRunTokens.get(task.id) !== runToken) return;
           activeProvider = taskScopedProvider;
         }
         const hasGit = fs.existsSync(path.join(workingDirectory, '.git'));
@@ -696,6 +713,7 @@ Optional list of any work you did not complete or that should be followed up. Om
             process.env.HERMES_SANDBOXED,
           ),
           onEvent: (coreEvent: CoreAgentEvent) => {
+            if (this.sessions.get(task.id) !== managed || this.latestRunTokens.get(task.id) !== runToken) return;
             const metadata: Record<string, unknown> = { ...coreEvent.metadata };
             let eventType = coreEvent.type;
             let content = coreEvent.content;
@@ -773,7 +791,7 @@ Optional list of any work you did not complete or that should be followed up. Om
         });
 
         const activeEntry = this.sessions.get(task.id);
-        if (activeEntry !== managed) {
+        if (activeEntry !== managed || this.latestRunTokens.get(task.id) !== runToken) {
           await session.destroy().catch(() => {});
           return;
         }
@@ -806,7 +824,7 @@ Optional list of any work you did not complete or that should be followed up. Om
         clearTimeout(timeoutId);
 
         // Primary completion path — status comes from the provider
-        if (this.sessions.get(task.id) === managed) {
+        if (this.sessions.get(task.id) === managed && this.latestRunTokens.get(task.id) === runToken) {
           this.sessions.delete(task.id);
           // On success, persist the agent-authored summary BEFORE the status
           // transition so the task-update broadcast carries it to clients.
@@ -831,7 +849,7 @@ Optional list of any work you did not complete or that should be followed up. Om
           session.destroy().catch(() => {});
         }
       } catch (err: unknown) {
-        if (this.sessions.get(task.id) !== managed) return;
+        if (this.sessions.get(task.id) !== managed || this.latestRunTokens.get(task.id) !== runToken) return;
         const message = errorMessage(err);
         const isCliMissing =
           message.includes('ENOENT') ||
@@ -906,6 +924,7 @@ Optional list of any work you did not complete or that should be followed up. Om
     const duration = Date.now() - entry.startTime;
     const { agentType } = entry;
     this.sessions.delete(taskId);
+    if (this.latestRunTokens.get(taskId) === entry.runToken) this.latestRunTokens.delete(taskId);
     // Mark as stopped so terminateOnce (from the catch block) won't double-broadcast
     this.stoppedTasks.add(taskId);
     setTimeout(() => this.stoppedTasks.delete(taskId), STOPPED_TASK_TTL_MS);

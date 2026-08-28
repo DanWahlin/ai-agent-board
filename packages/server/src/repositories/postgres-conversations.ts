@@ -784,12 +784,24 @@ export class PostgresConversationRepository implements ConversationRepository {
       if (!conv) { await client.query('ROLLBACK'); throw new Error('CONVERSATION_NOT_ACTIVE'); }
 
       const { rows } = await client.query(
-        'SELECT * FROM conversation_task_links WHERE conversation_id = $1 AND task_id = $2',
+        'SELECT * FROM conversation_task_links WHERE conversation_id = $1 AND task_id = $2 FOR UPDATE',
         [link.conversationId, link.taskId],
       );
       if (rows.length > 0) {
+        const current = this.rowToTaskLink(rows[0]);
+        if (current.messageId !== link.messageId) throw new Error('TASK_LINK_CONFLICT');
+        if (link.attemptId === undefined) {
+          await client.query('COMMIT');
+          return { link: current, created: false };
+        }
+        if (current.attemptId !== link.attemptId) {
+          await client.query(`
+            UPDATE conversation_task_links SET attempt_id = $1, created_at = $2
+            WHERE conversation_id = $3 AND task_id = $4
+          `, [link.attemptId ?? null, link.createdAt, link.conversationId, link.taskId]);
+        }
         await client.query('COMMIT');
-        return { link: this.rowToTaskLink(rows[0]), created: false };
+        return { link: current.attemptId === link.attemptId ? current : link, created: false };
       }
 
       await client.query(`

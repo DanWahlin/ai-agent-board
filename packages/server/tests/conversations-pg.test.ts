@@ -138,6 +138,40 @@ test('[PG] create and idempotency', serial, async () => {
   });
 });
 
+test('[PG] task links advance attempts only for the same source message', serial, async () => {
+  await withPgTestServer([{ token: TOKEN, scopes: ['conversations:read', 'conversations:write'] }], async ({ base, convRepo }) => {
+    const response = await fetch(base, {
+      method: 'POST', headers: headers(TOKEN, PRINCIPAL), body: JSON.stringify({ title: 'Attempt links' }),
+    });
+    assert.equal(response.status, 201);
+    const conversation = await response.json();
+    const first = {
+      conversationId: conversation.id, taskId: 'task-1', messageId: 'message-1',
+      attemptId: 'attempt-1', createdAt: 1,
+    };
+    assert.equal((await convRepo.linkTask(conversation.id, PRINCIPAL, first)).created, true);
+    assert.equal((await convRepo.linkTask(conversation.id, PRINCIPAL, first)).link.attemptId, 'attempt-1');
+
+    const advanced = { ...first, attemptId: 'attempt-2', createdAt: 2 };
+    const result = await convRepo.linkTask(conversation.id, PRINCIPAL, advanced);
+    assert.equal(result.created, false);
+    assert.equal(result.link.attemptId, 'attempt-2');
+    assert.equal((await convRepo.getLinkedTasks(conversation.id, PRINCIPAL))[0]?.attemptId, 'attempt-2');
+
+    const legacyReplay = await convRepo.linkTask(conversation.id, PRINCIPAL, {
+      ...advanced, attemptId: undefined, createdAt: 3,
+    });
+    assert.equal(legacyReplay.link.attemptId, 'attempt-2');
+    assert.equal((await convRepo.getLinkedTasks(conversation.id, PRINCIPAL))[0]?.attemptId, 'attempt-2');
+
+    await assert.rejects(
+      convRepo.linkTask(conversation.id, PRINCIPAL, { ...advanced, messageId: 'message-2', attemptId: 'attempt-3' }),
+      /TASK_LINK_CONFLICT/,
+    );
+    assert.equal((await convRepo.getLinkedTasks(conversation.id, PRINCIPAL))[0]?.attemptId, 'attempt-2');
+  });
+});
+
 test('[PG] principal-scoped idempotency', serial, async () => {
   await withPgTestServer([{ token: TOKEN, scopes: ['conversations:read', 'conversations:write'] }], async ({ base }) => {
     const h1 = { ...headers(TOKEN, PRINCIPAL), 'idempotency-key': 'shared-pg-key' };

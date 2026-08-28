@@ -533,6 +533,18 @@ export function createConversationsRouter(
       res.status(404).json({ error: 'NOT_FOUND', message: 'task not found' });
       return;
     }
+    if (attemptId !== undefined) {
+      const attempt = await taskRepo.getAttemptById(attemptId);
+      if (!attempt || attempt.taskId !== taskId) {
+        res.status(400).json({ error: 'INVALID_ATTEMPT_ID', message: 'attemptId does not belong to taskId' });
+        return;
+      }
+      const latestAttempt = (await taskRepo.getAttemptsByTaskId(taskId)).at(-1);
+      if (!latestAttempt || latestAttempt.id !== attemptId) {
+        res.status(409).json({ error: 'STALE_ATTEMPT_ID', message: 'attemptId is not the current task attempt' });
+        return;
+      }
+    }
 
     try {
       const result = await convRepo.linkTask(paramId(req), principalId, {
@@ -546,6 +558,10 @@ export function createConversationsRouter(
     } catch (err: any) {
       if (err.message === 'CONVERSATION_NOT_ACTIVE') {
         res.status(404).json({ error: 'NOT_FOUND', message: 'not found' });
+        return;
+      }
+      if (err.message === 'TASK_LINK_CONFLICT') {
+        res.status(409).json({ error: 'TASK_LINK_CONFLICT', message: 'task link is bound to a different message' });
         return;
       }
       throw err;

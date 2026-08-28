@@ -8,6 +8,7 @@ import { SqliteTaskRepository } from '../src/repositories/sqlite.js';
 import { createConversationsRouter } from '../src/routes/conversations.js';
 import { authMiddleware } from '../src/middleware/auth.js';
 import { migrateSqliteDatabase } from '../src/db.js';
+import type { ExecutionAttempt } from '../src/types.js';
 
 interface TestContext {
   base: string;
@@ -749,7 +750,7 @@ test('provider session validates field lengths', serial, async () => {
 
 // ─── Task links ───────────────────────────────────────────────────────────────
 
-test('task links are idempotent and tasks survive delete', serial, async () => {
+test('task links advance exact attempts, reject authority changes, and tasks survive delete', serial, async () => {
   await withTestServer([{ token: TOKEN, scopes: ['conversations:read', 'conversations:write'] }], async ({ base, taskRepo }) => {
     await taskRepo.create({
       id: 'task-1',
@@ -762,21 +763,70 @@ test('task links are idempotent and tasks survive delete', serial, async () => {
       agentType: 'copilot',
       createdAt: Date.now(),
     });
+    await taskRepo.create({
+      id: 'task-2', projectId: 'default', title: 'Other Task', description: '',
+      priority: 'medium', columnId: 'backlog', agentStatus: 'idle', agentType: 'copilot', createdAt: Date.now(),
+    });
+    const attempt = (id: string, taskId: string): ExecutionAttempt => ({
+      id, taskId, externalSource: 'agentmic', externalKey: id,
+      titleSnapshot: taskId, descriptionSnapshot: '', agentType: 'hermes', autoStart: false,
+      requestSnapshot: '{}', status: 'pending', createdAt: Date.now(),
+    });
+    await taskRepo.createAttemptIdempotent(attempt('attempt-1', 'task-1'));
+    await taskRepo.createAttemptIdempotent(attempt('attempt-other', 'task-2'));
 
     const conv = await createConversation(base, PRINCIPAL, 'Link Conv');
     const linkRes = await fetch(`${base}/${conv.id}/tasks`, {
       method: 'POST',
       headers: headers(TOKEN, PRINCIPAL),
-      body: JSON.stringify({ taskId: 'task-1' }),
+      body: JSON.stringify({ taskId: 'task-1', messageId: 'message-1', attemptId: 'attempt-1' }),
     });
     assert.equal(linkRes.status, 201);
 
     const linkRes2 = await fetch(`${base}/${conv.id}/tasks`, {
       method: 'POST',
       headers: headers(TOKEN, PRINCIPAL),
-      body: JSON.stringify({ taskId: 'task-1' }),
+      body: JSON.stringify({ taskId: 'task-1', messageId: 'message-1', attemptId: 'attempt-1' }),
     });
     assert.equal(linkRes2.status, 200);
+    assert.equal((await linkRes2.json()).attemptId, 'attempt-1');
+
+    await taskRepo.createAttemptIdempotent(attempt('attempt-2', 'task-1'));
+    const advanced = await fetch(`${base}/${conv.id}/tasks`, {
+      method: 'POST', headers: headers(TOKEN, PRINCIPAL),
+      body: JSON.stringify({ taskId: 'task-1', messageId: 'message-1', attemptId: 'attempt-2' }),
+    });
+    assert.equal(advanced.status, 200);
+    assert.equal((await advanced.json()).attemptId, 'attempt-2');
+
+    const links = await fetch(`${base}/${conv.id}/tasks`, { headers: headers(TOKEN, PRINCIPAL) });
+    assert.equal(links.status, 200);
+    assert.equal((await links.json())[0].attemptId, 'attempt-2');
+
+    const legacyReplay = await fetch(`${base}/${conv.id}/tasks`, {
+      method: 'POST', headers: headers(TOKEN, PRINCIPAL),
+      body: JSON.stringify({ taskId: 'task-1', messageId: 'message-1' }),
+    });
+    assert.equal(legacyReplay.status, 200);
+    assert.equal((await legacyReplay.json()).attemptId, 'attempt-2');
+
+    const changedMessage = await fetch(`${base}/${conv.id}/tasks`, {
+      method: 'POST', headers: headers(TOKEN, PRINCIPAL),
+      body: JSON.stringify({ taskId: 'task-1', messageId: 'message-2', attemptId: 'attempt-2' }),
+    });
+    assert.equal(changedMessage.status, 409);
+
+    const foreignAttempt = await fetch(`${base}/${conv.id}/tasks`, {
+      method: 'POST', headers: headers(TOKEN, PRINCIPAL),
+      body: JSON.stringify({ taskId: 'task-1', messageId: 'message-1', attemptId: 'attempt-other' }),
+    });
+    assert.equal(foreignAttempt.status, 400);
+
+    const staleAttempt = await fetch(`${base}/${conv.id}/tasks`, {
+      method: 'POST', headers: headers(TOKEN, PRINCIPAL),
+      body: JSON.stringify({ taskId: 'task-1', messageId: 'message-1', attemptId: 'attempt-1' }),
+    });
+    assert.equal(staleAttempt.status, 409);
 
     const deleteRes = await fetch(`${base}/${conv.id}`, {
       method: 'DELETE',

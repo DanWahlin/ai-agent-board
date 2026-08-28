@@ -644,7 +644,17 @@ export class SqliteConversationRepository implements ConversationRepository {
       const existing = this.db.prepare(
         'SELECT * FROM conversation_task_links WHERE conversation_id = ? AND task_id = ?'
       ).get(link.conversationId, link.taskId) as any;
-      if (existing) return { link: this.rowToTaskLink(existing), created: false };
+      if (existing) {
+        const current = this.rowToTaskLink(existing);
+        if (current.messageId !== link.messageId) throw new Error('TASK_LINK_CONFLICT');
+        if (link.attemptId === undefined) return { link: current, created: false };
+        if (current.attemptId === link.attemptId) return { link: current, created: false };
+        this.db.prepare(`
+          UPDATE conversation_task_links SET attempt_id = ?, created_at = ?
+          WHERE conversation_id = ? AND task_id = ?
+        `).run(link.attemptId ?? null, link.createdAt, link.conversationId, link.taskId);
+        return { link, created: false };
+      }
 
       this.db.prepare(`
         INSERT INTO conversation_task_links (conversation_id, task_id, message_id, attempt_id, created_at)

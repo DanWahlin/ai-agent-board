@@ -84,6 +84,17 @@ export function usesTaskScopedHermesProvider(
   return agentType === 'hermes' && (mode === 'agent-default' || sandboxEnabled);
 }
 
+export function workingDirectoryForExecution(
+  task: Task,
+  orchestrationMode: OrchestrationMode,
+  worktreePath?: string,
+  defaultDirectory = process.cwd(),
+): string {
+  return orchestrationMode === 'agent-default'
+    ? defaultDirectory
+    : worktreePath || task.repoPath || defaultDirectory;
+}
+
 // Upper bound on accumulated assistant prose kept for summary extraction.
 // We only need the tail (the final <task-summary> block), so cap memory use.
 const MAX_SUMMARY_BUFFER = 64_000;
@@ -683,7 +694,7 @@ export class AgentManager {
       }, taskTimeoutMs);
       managed.timeoutId = timeoutId;
       try {
-        const workingDirectory = worktreePath || task.repoPath || process.cwd();
+        const workingDirectory = workingDirectoryForExecution(task, execution.orchestrationMode, worktreePath);
         let activeProvider = provider;
         const needsTaskScopedHermes = usesTaskScopedHermesProvider(agentType, execution.orchestrationMode);
         if (needsTaskScopedHermes) {

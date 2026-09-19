@@ -61,8 +61,9 @@ export function createAgentRouter(
       return;
     }
     const execution = await repo.getCurrentExecution(id);
-    if (agentType !== undefined && execution.orchestrationMode === 'agent-default' && agentType !== execution.agentType) {
-      res.status(409).json({ error: 'agent-default runtime is bound to its execution attempt' });
+    if (execution.orchestrationMode === 'agent-default'
+      && [repoPath, branchName, baseBranch, useWorktree, agentType].some((value) => value !== undefined)) {
+      res.status(409).json({ error: 'agent-default execution settings are bound to its attempt' });
       return;
     }
     if (typeof branchName === 'string' && branchName !== '' && !isValidGitRef(branchName)) {

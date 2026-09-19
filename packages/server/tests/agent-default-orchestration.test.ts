@@ -248,7 +248,11 @@ test('agent-default attempt rejects runtime mutation through configure and manua
       });
       assert.equal(response.status, 201);
       const created = await response.json() as { task: { id: string } };
-      const configure = await fetch(`${base}/api/tasks/${created.task.id}/configure`, {
+      let configure = await fetch(`${base}/api/tasks/${created.task.id}/configure`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ repoPath: '/tmp/redirect' }),
+      });
+      assert.equal(configure.status, 409);
+      configure = await fetch(`${base}/api/tasks/${created.task.id}/configure`, {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agentType: 'copilot' }),
       });
       assert.equal(configure.status, 409);
@@ -344,9 +348,15 @@ test('cancellation is fenced to the exact current attempt', async () => {
       response = await cancel(current.attempt.id);
       assert.equal(response.status, 200);
       assert.deepEqual(stopped, [`${initial.task.id}:${current.attempt.id}`]);
-      const result = await response.json() as { task: { agentStatus: string }; contract: { attemptId: string } };
+      const result = await response.json() as {
+        task: { agentStatus: string }; attempt: { id: string };
+        contract: { projectId: string; taskId: string; attemptId: string; deepLink: string };
+      };
       assert.equal(result.task.agentStatus, 'failed');
+      assert.equal(result.attempt.id, current.attempt.id);
       assert.equal(result.contract.attemptId, current.attempt.id);
+      assert.equal(result.contract.projectId, 'voice');
+      assert.match(result.contract.deepLink, new RegExp(initial.task.id));
     });
   } finally { db.close(); }
 });

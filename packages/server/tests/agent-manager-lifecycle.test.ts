@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Task } from '../../../shared/types.js';
-import { AgentManager, hermesCommandForExecution, usesTaskScopedHermesProvider } from '../src/services/agent-manager.js';
+import { AgentManager, hermesCommandForExecution, usesTaskScopedHermesProvider, workingDirectoryForExecution } from '../src/services/agent-manager.js';
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -372,4 +372,7 @@ test('sandboxed Hermes selects a separate plain command for agent-default', () =
   assert.equal(usesTaskScopedHermesProvider('hermes', 'coding', 'false'), false);
   assert.equal(usesTaskScopedHermesProvider('hermes', 'coding', 'true'), true);
   assert.equal(usesTaskScopedHermesProvider('copilot', 'agent-default', 'true'), false);
+  const redirected = { ...task('redirected'), agentType: 'hermes' as const, repoPath: '/tmp/redirected' };
+  assert.equal(workingDirectoryForExecution(redirected, 'agent-default', undefined, '/default/hermes'), '/default/hermes');
+  assert.equal(workingDirectoryForExecution(redirected, 'coding', undefined, '/default/hermes'), '/tmp/redirected');
 });

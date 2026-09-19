@@ -443,6 +443,11 @@ export function createOrchestrationsRouter(
       res.status(409).json({ error: 'attempt is no longer current' });
       return;
     }
+    const cancelledAttempt = orchestration.attempts.find((attempt) => attempt.id === current.attemptId);
+    if (!cancelledAttempt) {
+      res.status(409).json({ error: 'current attempt could not be resolved' });
+      return;
+    }
     // Stop the exact live session when present. A false result can also mean the
     // durable attempt is still pending and has no in-memory session yet; the
     // repository CAS below is the authority for whether cancellation is valid.
@@ -453,7 +458,16 @@ export function createOrchestrationsRouter(
       return;
     }
     broadcastTaskUpdate(task);
-    res.json({ task, contract: { taskId: task.id, attemptId: current.attemptId } });
+    res.json({
+      task,
+      attempt: cancelledAttempt,
+      contract: {
+        projectId: task.projectId,
+        taskId: task.id,
+        attemptId: current.attemptId,
+        deepLink: taskLink(req, task.projectId, task.id),
+      },
+    });
   }));
 
   router.post('/:id/retry', asyncHandler(async (req: Request, res: Response) => {

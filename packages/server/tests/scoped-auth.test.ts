@@ -49,6 +49,7 @@ test('scope mapping covers allowlisted project, agent, and relationship reads an
   assert.equal(requiredScope(request('/projects/a', 'GET')), 'projects:read');
   assert.equal(requiredScope(request('/projects/config', 'GET')), undefined);
   assert.equal(requiredScope(request('/agents', 'GET')), 'agents:read');
+  assert.equal(requiredScope(request('/orchestrations/a/cancel', 'POST')), 'orchestrations:cancel');
   assert.equal(requiredScope(request('/tasks/a/relationships', 'GET')), 'tasks:relationships');
   assert.equal(requiredScope(request('/tasks/a/relationships', 'POST')), 'tasks:relationships');
   assert.equal(requiredScope(request('/tasks/a/relationships/b', 'DELETE')), 'tasks:relationships');
@@ -62,6 +63,9 @@ test('middleware enforces exact service scopes while preserving tokenless browse
     { token: 'projects-token', scopes: ['projects:read'] },
     { token: 'agents-token', scopes: ['agents:read'] },
     { token: 'relations-token', scopes: ['tasks:relationships'] },
+    { token: 'create-token', scopes: ['orchestrations:create'] },
+    { token: 'read-token', scopes: ['orchestrations:read'] },
+    { token: 'cancel-token', scopes: ['orchestrations:cancel'] },
   ]);
   try {
     await withAuthApi(async (base) => {
@@ -77,6 +81,10 @@ test('middleware enforces exact service scopes while preserving tokenless browse
       assert.equal((await fetch(`${base}/tasks/t/relationships`, { headers: bearer('relations-token') })).status, 200);
       assert.equal((await fetch(`${base}/tasks/t/relationships`, { method: 'POST', headers: bearer('relations-token') })).status, 200);
       assert.equal((await fetch(`${base}/tasks/t/relationships/r`, { method: 'DELETE', headers: bearer('relations-token') })).status, 200);
+      assert.equal((await fetch(`${base}/orchestrations/t/cancel`, { method: 'POST', headers: bearer('cancel-token') })).status, 200);
+      assert.equal((await fetch(`${base}/orchestrations/t/cancel`, { method: 'POST', headers: bearer('create-token') })).status, 403);
+      assert.equal((await fetch(`${base}/orchestrations/t/cancel`, { method: 'POST', headers: bearer('read-token') })).status, 403);
+      assert.equal((await fetch(`${base}/orchestrations/t/cancel`, { method: 'POST' })).status, 401);
 
       assert.equal((await fetch(`${base}/projects`, { headers: bearer('agents-token') })).status, 403);
       assert.equal((await fetch(`${base}/agents`, { headers: bearer('projects-token') })).status, 403);

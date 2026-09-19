@@ -572,6 +572,7 @@ export async function startAgentForTask(
   const claimed = await repo.claimRun(task.id, Date.now());
   if (!claimed) return;
   task = claimed;
+  const execution = await repo.getCurrentExecution(task.id);
   const updates: Partial<Task> = {
     agentStatus: 'planning',
     startedAt: Date.now(),
@@ -591,6 +592,7 @@ export async function startAgentForTask(
         await onStatusChange(status);
       },
       makeWorktreeCallback(repo, task.id),
+      execution,
     );
     if (!started) {
       await repo.clearRun(task.id);

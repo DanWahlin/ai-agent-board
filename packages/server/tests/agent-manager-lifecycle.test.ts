@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Task } from '../../../shared/types.js';
-import { AgentManager } from '../src/services/agent-manager.js';
+import { AgentManager, hermesCommandForExecution, usesTaskScopedHermesProvider } from '../src/services/agent-manager.js';
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -322,4 +322,67 @@ test('termination is reported busy until stop cleanup finishes', async () => {
   assert.equal(await stopping, true);
   assert.equal(manager.isRunning('busy-stop'), false);
   executeResult.resolve({ status: 'complete' });
+});
+
+test('agent-default executes private input byte-for-byte without coding prompt or repo scope', async () => {
+  let options: Record<string, unknown> | undefined;
+  let prompt: string | undefined;
+  const statuses: string[] = [];
+  const manager = managerWithSession({
+    execute: async (value: string) => { prompt = value; return { status: 'complete' }; },
+    abort: async () => {}, destroy: async () => {}, send: async () => {},
+  });
+  const internals = manager as unknown as { providers: Map<string, { createSession: (value: Record<string, unknown>) => Promise<unknown> }> };
+  const provider = internals.providers.get('copilot')!;
+  const original = provider.createSession;
+  provider.createSession = async (value) => { options = value; return original(value); };
+  const input = '  exact\n<input> with trailing spaces  ';
+  assert.equal(manager.startAgent({ ...task('agent-default'), repoPath: '/should/not/scope', useWorktree: true },
+    async (status) => { statuses.push(status); }, undefined,
+    { attemptId: 'attempt-1', orchestrationMode: 'agent-default', executionInput: input }), true);
+  await waitFor(() => statuses.includes('complete'), 'agent-default run did not complete');
+  assert.equal(prompt, input);
+  assert.equal(options?.systemPrompt, '');
+  assert.equal(options?.repoPath, undefined);
+});
+
+test('coding execution retains its coding prompt contract', async () => {
+  let options: Record<string, unknown> | undefined;
+  let prompt: string | undefined;
+  const statuses: string[] = [];
+  const manager = managerWithSession({
+    execute: async (value: string) => { prompt = value; return { status: 'complete' }; },
+    abort: async () => {}, destroy: async () => {}, send: async () => {},
+  });
+  const internals = manager as unknown as { providers: Map<string, { createSession: (value: Record<string, unknown>) => Promise<unknown> }> };
+  const provider = internals.providers.get('copilot')!;
+  const original = provider.createSession;
+  provider.createSession = async (value) => { options = value; return original(value); };
+  assert.equal(manager.startAgent(task('coding-regression'), async (status) => { statuses.push(status); }), true);
+  await waitFor(() => statuses.includes('complete'), 'coding run did not complete');
+  assert.equal(prompt, 'Lifecycle test\n\nExercise lifecycle ordering.');
+  assert.match(String(options?.systemPrompt), /You are a coding agent/);
+});
+
+test('exact-attempt stop cannot terminate a successor session', async () => {
+  const manager = new AgentManager();
+  const sessions = (manager as unknown as { sessions: Map<string, unknown> }).sessions;
+  sessions.set('attempt-fence', {
+    runToken: Symbol('successor'), attemptId: 'attempt-2', startTime: Date.now(), agentType: 'copilot',
+    session: { abort: async () => {}, destroy: async () => {} },
+  });
+  assert.equal(await manager.stopAgent('attempt-fence', 'attempt-1'), false);
+  assert.equal(manager.isRunning('attempt-fence'), true);
+  assert.equal(await manager.stopAgent('attempt-fence', 'attempt-2'), true);
+  assert.equal(manager.isRunning('attempt-fence'), false);
+});
+
+test('sandboxed Hermes selects a separate plain command for agent-default', () => {
+  assert.equal(hermesCommandForExecution('coding', { HERMES_COMMAND: '/sandbox/hermes' }), '/sandbox/hermes');
+  assert.equal(hermesCommandForExecution('agent-default', {}), 'hermes');
+  assert.equal(hermesCommandForExecution('agent-default', { HERMES_AGENT_DEFAULT_COMMAND: '/plain/hermes' }), '/plain/hermes');
+  assert.equal(usesTaskScopedHermesProvider('hermes', 'agent-default', 'false'), true);
+  assert.equal(usesTaskScopedHermesProvider('hermes', 'coding', 'false'), false);
+  assert.equal(usesTaskScopedHermesProvider('hermes', 'coding', 'true'), true);
+  assert.equal(usesTaskScopedHermesProvider('copilot', 'agent-default', 'true'), false);
 });

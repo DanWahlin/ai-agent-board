@@ -1,4 +1,5 @@
 import type { AgentSessionHooks } from '@codewithdan/agent-sdk-core';
+import type { OrchestrationMode } from '../types.js';
 
 /**
  * Agent Board is headless, so Hermes ACP permission prompts need an explicit
@@ -7,11 +8,16 @@ import type { AgentSessionHooks } from '@codewithdan/agent-sdk-core';
  */
 export function hermesPermissionHooks(
   agentType: string | undefined,
-  configured: string | undefined,
-  sandboxed: string | undefined,
+  mode: OrchestrationMode,
+  codingConfigured: string | undefined,
+  codingSandboxed: string | undefined,
+  agentDefaultConfigured: string | undefined,
 ): AgentSessionHooks | undefined {
   const enabled = (value: string | undefined) => ['1', 'true', 'yes', 'on'].includes((value ?? '').trim().toLowerCase());
-  if (agentType !== 'hermes' || !enabled(configured) || !enabled(sandboxed)) {
+  const approved = mode === 'agent-default'
+    ? enabled(agentDefaultConfigured)
+    : enabled(codingConfigured) && enabled(codingSandboxed);
+  if (agentType !== 'hermes' || !approved) {
     return undefined;
   }
   return {

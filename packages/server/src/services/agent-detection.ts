@@ -221,21 +221,38 @@ async function normalizeConfiguredHermesAvailability(
   execCommand: ExecCommand,
   env: NodeJS.ProcessEnv,
 ): Promise<AgentInfo[]> {
-  const configuredCommand = env.HERMES_COMMAND?.trim();
-  if (!configuredCommand) return agents;
+  const codingCommand = env.HERMES_COMMAND?.trim();
+  const agentDefaultCommand = env.HERMES_AGENT_DEFAULT_COMMAND?.trim();
+  if (!codingCommand && !agentDefaultCommand) return agents;
 
   const hermes = agents.find(agent => agent.name === 'hermes');
   if (!hermes) return agents;
 
-  const result = await runProbe(execCommand, configuredCommand, ['--version'], env);
-  if (!result.ok) {
+  const probes: Array<{ label: string; command: string }> = [];
+  if (codingCommand) probes.push({ label: 'Configured Hermes command', command: codingCommand });
+  if (agentDefaultCommand) probes.push({ label: 'Configured agent-default Hermes command', command: agentDefaultCommand });
+  const versions: string[] = [];
+  for (const probe of probes) {
+    const result = await runProbe(execCommand, probe.command, ['--version'], env);
+    if (!result.ok) {
+      return agents.map(agent => agent.name === 'hermes'
+        ? { ...agent, available: false, reason: `${probe.label} is not ready: ${result.error ?? 'unknown error'}` }
+        : agent);
+    }
+    const version = firstOutputLine(`${result.stdout}\n${result.stderr}`);
+    if (version) versions.push(version);
+  }
+
+  // Without an explicit agent-default command, that mode uses plain `hermes`.
+  // Preserve the core probe's failure instead of letting a coding wrapper mask it.
+  if (!agentDefaultCommand && !hermes.available) {
     return agents.map(agent => agent.name === 'hermes'
-      ? { ...agent, available: false, reason: `Configured Hermes command is not ready: ${result.error ?? 'unknown error'}` }
+      ? { ...agent, available: false, reason: `Agent-default Hermes command is not ready: ${hermes.reason ?? 'plain hermes is unavailable'}` }
       : agent);
   }
 
   return agents.map(agent => agent.name === 'hermes'
-    ? { ...agent, available: true, version: firstOutputLine(`${result.stdout}\n${result.stderr}`), reason: undefined }
+    ? { ...agent, available: true, version: versions[0] ?? agent.version, reason: undefined }
     : agent);
 }
 

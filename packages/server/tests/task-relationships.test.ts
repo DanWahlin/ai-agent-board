@@ -20,7 +20,8 @@ function makeDb() {
       priority TEXT, column_id TEXT, agent_status TEXT, agent_type TEXT, created_at INTEGER, started_at INTEGER,
       completed_at INTEGER, repo_path TEXT, branch_name TEXT, base_branch TEXT, use_worktree INTEGER,
       worktree_path TEXT, archived INTEGER, group_id TEXT, group_order INTEGER, summary TEXT, external_source TEXT,
-      external_key TEXT, provenance TEXT, run_requested_at INTEGER, run_claimed_at INTEGER, timeout_minutes INTEGER);
+      external_key TEXT, provenance TEXT, run_requested_at INTEGER, run_claimed_at INTEGER, timeout_minutes INTEGER,
+      current_attempt_id TEXT);
     CREATE UNIQUE INDEX identity ON tasks(external_source,external_key) WHERE external_source IS NOT NULL AND external_key IS NOT NULL;
     CREATE TABLE events(id TEXT,task_id TEXT,type TEXT,content TEXT,timestamp INTEGER,metadata TEXT);
     CREATE TABLE task_relationships(task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -29,7 +30,8 @@ function makeDb() {
     CREATE TABLE execution_attempts(id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
       external_source TEXT NOT NULL, external_key TEXT NOT NULL, title_snapshot TEXT NOT NULL, description_snapshot TEXT NOT NULL,
       agent_type TEXT NOT NULL, related_task_id TEXT, auto_start INTEGER NOT NULL, timeout_minutes INTEGER,
-      request_snapshot TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(external_source, external_key));
+      request_snapshot TEXT NOT NULL DEFAULT '{}', orchestration_mode TEXT NOT NULL DEFAULT 'coding', execution_input TEXT,
+      status TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(external_source, external_key));
   `);
   return db;
 }

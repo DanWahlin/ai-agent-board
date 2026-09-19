@@ -1,6 +1,6 @@
 import { Pool } from 'pg';
 import type { Task, Priority, ColumnId, AgentStatus, AgentType, AgentEvent, TaskRelationship, ExecutionAttempt } from '../types.js';
-import type { TaskRepository, ContinuationEligibility } from './types.js';
+import type { TaskRepository, ContinuationEligibility, AttemptExecutionContext } from './types.js';
 import { isValidPriority, isValidColumnId, isValidAgentStatus, isValidAgentType } from '@ai-agent-board/shared/constants.js';
 import { errorMessage } from '../utils.js';
 
@@ -28,6 +28,7 @@ interface TaskRow {
   external_source: string | null; external_key: string | null; provenance: string | null;
   run_requested_at: string | null; run_claimed_at: string | null;
   timeout_minutes: number | null;
+  current_attempt_id: string | null;
 }
 
 function rowToTask(row: TaskRow): Task {
@@ -84,6 +85,8 @@ interface AttemptRow {
   title_snapshot: string; description_snapshot: string; agent_type: AgentType;
   related_task_id: string | null; auto_start: boolean; timeout_minutes: number | null;
   request_snapshot: string;
+  orchestration_mode: AttemptExecutionContext['orchestrationMode'];
+  execution_input: string | null;
   status: ExecutionAttempt['status']; created_at: string;
 }
 
@@ -332,6 +335,24 @@ export class PostgresTaskRepository implements TaskRepository {
     return rows.map(rowToAttempt);
   }
 
+  async getCurrentExecution(taskId: string): Promise<AttemptExecutionContext> {
+    const { rows } = await this.pool.query<{ id: string | null; orchestration_mode: AttemptExecutionContext['orchestrationMode'] | null; execution_input: string | null }>(
+      `SELECT a.id,a.orchestration_mode,a.execution_input FROM tasks t
+       LEFT JOIN execution_attempts a ON a.id=t.current_attempt_id WHERE t.id=$1`, [taskId]);
+    const row = rows[0];
+    if (!row) return { orchestrationMode: 'coding' };
+    return { ...(row.id ? { attemptId: row.id } : {}), orchestrationMode: row.orchestration_mode ?? 'coding',
+      ...(row.execution_input != null ? { executionInput: row.execution_input } : {}) };
+  }
+
+  async getAttemptExecution(attemptId: string): Promise<AttemptExecutionContext | undefined> {
+    const { rows } = await this.pool.query<{ id: string; orchestration_mode: AttemptExecutionContext['orchestrationMode']; execution_input: string | null }>(
+      'SELECT id,orchestration_mode,execution_input FROM execution_attempts WHERE id=$1', [attemptId]);
+    const row = rows[0];
+    return row ? { attemptId: row.id, orchestrationMode: row.orchestration_mode ?? 'coding',
+      ...(row.execution_input != null ? { executionInput: row.execution_input } : {}) } : undefined;
+  }
+
   async createAttemptIdempotent(attempt: ExecutionAttempt): Promise<{ attempt: ExecutionAttempt; created: boolean }> {
     const { rows } = await this.pool.query<AttemptRow>(`INSERT INTO execution_attempts
       (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,request_snapshot,status,created_at)
@@ -345,7 +366,10 @@ export class PostgresTaskRepository implements TaskRepository {
     return { attempt: existing, created: false };
   }
 
-  async createOrchestration(task: Task, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt = Date.now()) {
+  async createOrchestration(task: Task, attempt: ExecutionAttempt, executionOrRelated?: AttemptExecutionContext | string, relatedOrCreated?: string | number, createdAt = Date.now()) {
+    const execution = typeof executionOrRelated === 'object' ? executionOrRelated : { orchestrationMode: 'coding' as const };
+    const relatedTaskId = typeof executionOrRelated === 'object' ? relatedOrCreated as string | undefined : executionOrRelated;
+    const relationshipCreatedAt = typeof executionOrRelated === 'object' ? createdAt : typeof relatedOrCreated === 'number' ? relatedOrCreated : Date.now();
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -386,12 +410,12 @@ export class PostgresTaskRepository implements TaskRepository {
       if (!persistedTask) throw new Error('failed to persist orchestration task');
       const persistedAttempt = { ...attempt, taskId: persistedTask.id };
       const attemptInsert = await client.query<AttemptRow>(`INSERT INTO execution_attempts
-        (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,request_snapshot,status,created_at)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,request_snapshot,orchestration_mode,execution_input,status,created_at)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
         ON CONFLICT(external_source,external_key) DO NOTHING RETURNING *`, [persistedAttempt.id,persistedAttempt.taskId,persistedAttempt.externalSource,
         persistedAttempt.externalKey,persistedAttempt.titleSnapshot,persistedAttempt.descriptionSnapshot,persistedAttempt.agentType,
         persistedAttempt.relatedTaskId ?? null,persistedAttempt.autoStart,persistedAttempt.timeoutMinutes ?? null,persistedAttempt.requestSnapshot,
-        persistedAttempt.status,persistedAttempt.createdAt]);
+        execution.orchestrationMode,execution.executionInput ?? null,persistedAttempt.status,persistedAttempt.createdAt]);
       if (!attemptInsert.rows[0]) {
         const replayResult = await client.query<AttemptRow>('SELECT * FROM execution_attempts WHERE external_source=$1 AND external_key=$2', [attempt.externalSource,attempt.externalKey]);
         const replay = replayResult.rows[0] ? rowToAttempt(replayResult.rows[0]) : undefined;
@@ -401,6 +425,7 @@ export class PostgresTaskRepository implements TaskRepository {
         await client.query('COMMIT');
         return { task: rowToTask(replayTaskResult.rows[0]), attempt: replay, created: false };
       }
+      await client.query('UPDATE tasks SET current_attempt_id=$1 WHERE id=$2', [persistedAttempt.id, persistedTask.id]);
       if (relatedTaskId) await this.insertRelationshipWithClient(client, persistedTask.id, relatedTaskId, relationshipCreatedAt);
       await client.query('COMMIT');
       return { task: persistedTask, attempt: rowToAttempt(attemptInsert.rows[0]), created: true };
@@ -410,7 +435,17 @@ export class PostgresTaskRepository implements TaskRepository {
     } finally { client.release(); }
   }
 
-  async continueOrchestration(taskId: string, updates: Partial<Task>, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt = Date.now(), eligibility?: ContinuationEligibility) {
+  async continueOrchestration(taskId: string, updates: Partial<Task>, attempt: ExecutionAttempt,
+    executionOrRelated?: AttemptExecutionContext | string, relatedOrCreated?: string | number,
+    createdOrEligibility?: number | ContinuationEligibility, eligibilityMaybe?: ContinuationEligibility) {
+    const execution = typeof executionOrRelated === 'object' ? executionOrRelated : { orchestrationMode: 'coding' as const };
+    const relatedTaskId = typeof executionOrRelated === 'object' ? relatedOrCreated as string | undefined : executionOrRelated;
+    const relationshipCreatedAt = typeof executionOrRelated === 'object'
+      ? typeof createdOrEligibility === 'number' ? createdOrEligibility : Date.now()
+      : typeof relatedOrCreated === 'number' ? relatedOrCreated : Date.now();
+    const eligibility = typeof executionOrRelated === 'object'
+      ? eligibilityMaybe ?? (typeof createdOrEligibility === 'object' ? createdOrEligibility : undefined)
+      : typeof createdOrEligibility === 'object' ? createdOrEligibility : undefined;
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -428,11 +463,12 @@ export class PostgresTaskRepository implements TaskRepository {
       const current = rowToTask(currentResult.rows[0]);
       const persistedAttempt = { ...attempt, taskId };
       const attemptInsert = await client.query<AttemptRow>(`INSERT INTO execution_attempts
-        (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,request_snapshot,status,created_at)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,request_snapshot,orchestration_mode,execution_input,status,created_at)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
         ON CONFLICT(external_source,external_key) DO NOTHING RETURNING *`, [persistedAttempt.id,taskId,persistedAttempt.externalSource,persistedAttempt.externalKey,
         persistedAttempt.titleSnapshot,persistedAttempt.descriptionSnapshot,persistedAttempt.agentType,persistedAttempt.relatedTaskId ?? null,
-        persistedAttempt.autoStart,persistedAttempt.timeoutMinutes ?? null,persistedAttempt.requestSnapshot,persistedAttempt.status,persistedAttempt.createdAt]);
+        persistedAttempt.autoStart,persistedAttempt.timeoutMinutes ?? null,persistedAttempt.requestSnapshot,execution.orchestrationMode,
+        execution.executionInput ?? null,persistedAttempt.status,persistedAttempt.createdAt]);
       if (!attemptInsert.rows[0]) {
         const replayResult = await client.query<AttemptRow>('SELECT * FROM execution_attempts WHERE external_source=$1 AND external_key=$2', [attempt.externalSource,attempt.externalKey]);
         const replay = replayResult.rows[0] ? rowToAttempt(replayResult.rows[0]) : undefined;
@@ -456,10 +492,10 @@ export class PostgresTaskRepository implements TaskRepository {
       const merged = { ...current, ...updates };
       const updated = await client.query<TaskRow>(`UPDATE tasks SET title=$1,description=$2,priority=$3,column_id=$4,agent_status=$5,agent_type=$6,
         started_at=$7,completed_at=$8,repo_path=$9,branch_name=$10,base_branch=$11,use_worktree=$12,worktree_path=$13,archived=$14,
-        summary=$15,run_requested_at=$16,run_claimed_at=$17,timeout_minutes=$18 WHERE id=$19 RETURNING *`, [merged.title,merged.description,
+        summary=$15,run_requested_at=$16,run_claimed_at=$17,timeout_minutes=$18,current_attempt_id=$19 WHERE id=$20 RETURNING *`, [merged.title,merged.description,
         merged.priority,merged.columnId,merged.agentStatus,merged.agentType,merged.startedAt ?? null,merged.completedAt ?? null,merged.repoPath ?? null,
         merged.branchName ?? null,merged.baseBranch ?? null,merged.useWorktree ?? null,merged.worktreePath ?? null,merged.archived ?? false,
-        merged.summary ?? null,merged.runRequestedAt ?? null,merged.runClaimedAt ?? null,merged.timeoutMinutes ?? null,taskId]);
+        merged.summary ?? null,merged.runRequestedAt ?? null,merged.runClaimedAt ?? null,merged.timeoutMinutes ?? null,persistedAttempt.id,taskId]);
       if (!updated.rows[0]) throw new Error('failed to reset orchestration task');
       await client.query('COMMIT');
       return { task: rowToTask(updated.rows[0]), attempt: rowToAttempt(attemptInsert.rows[0]), created: true };

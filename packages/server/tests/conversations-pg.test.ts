@@ -96,6 +96,14 @@ test('[PG] migration is idempotent', serial, async () => {
       "SELECT tablename FROM pg_tables WHERE tablename LIKE 'conversation%'"
     );
     assert.ok(rows.length >= 6);
+    const columns = await pool.query(
+      "SELECT column_name FROM information_schema.columns WHERE table_name='execution_attempts' AND column_name IN ('orchestration_mode','execution_input')"
+    );
+    assert.deepEqual(columns.rows.map((row) => row.column_name).sort(), ['execution_input', 'orchestration_mode']);
+    const constraint = await pool.query(
+      "SELECT 1 FROM pg_constraint WHERE conname='execution_attempts_orchestration_mode_check' AND conrelid='execution_attempts'::regclass"
+    );
+    assert.equal(constraint.rowCount, 1);
   } finally {
     await dropAllConversationTables(pool);
     await pool.end();

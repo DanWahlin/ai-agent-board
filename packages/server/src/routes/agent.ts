@@ -151,6 +151,7 @@ export function createAgentRouter(
       }
     }
 
+    const execution = await repo.getCurrentExecution(task.id);
     const started = agentManager.startAgent(
       updated,
       async (status) => {
@@ -158,6 +159,7 @@ export function createAgentRouter(
         await makeStatusCallback(repo, task.id)(status);
       },
       makeWorktreeCallback(repo, task.id),
+      execution,
     );
 
     if (!started) {

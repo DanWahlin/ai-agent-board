@@ -1,8 +1,8 @@
 import type { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 
-export type ServiceScope = 'projects:read' | 'agents:read' | 'orchestrations:create' | 'orchestrations:read' | 'orchestrations:message' | 'tasks:relationships' | 'conversations:read' | 'conversations:write';
-const ALL_SERVICE_SCOPES: ServiceScope[] = ['projects:read', 'agents:read', 'orchestrations:create', 'orchestrations:read', 'orchestrations:message', 'tasks:relationships', 'conversations:read', 'conversations:write'];
+export type ServiceScope = 'projects:read' | 'agents:read' | 'orchestrations:create' | 'orchestrations:read' | 'orchestrations:message' | 'orchestrations:cancel' | 'tasks:relationships' | 'conversations:read' | 'conversations:write';
+const ALL_SERVICE_SCOPES: ServiceScope[] = ['projects:read', 'agents:read', 'orchestrations:create', 'orchestrations:read', 'orchestrations:message', 'orchestrations:cancel', 'tasks:relationships', 'conversations:read', 'conversations:write'];
 
 interface Credential { token?: string; sha256?: string; scopes: ServiceScope[] }
 
@@ -38,6 +38,7 @@ export function requiredScope(req: Request): ServiceScope | undefined {
   if (/^\/orchestrations\/[^/]+\/retry$/.test(p) && method === 'POST') return 'orchestrations:create';
   if (/^\/orchestrations\/[^/]+$/.test(p) && method === 'GET') return 'orchestrations:read';
   if (/^\/orchestrations\/[^/]+\/message$/.test(p) && method === 'POST') return 'orchestrations:message';
+  if (/^\/orchestrations\/[^/]+\/cancel$/.test(p) && method === 'POST') return 'orchestrations:cancel';
   if (/^\/tasks\/[^/]+\/relationships(?:\/[^/]+)?$/.test(p) && (method === 'GET' || method === 'POST' || method === 'DELETE')) return 'tasks:relationships';
   if (p === '/conversations' || p.startsWith('/conversations/')) {
     if (method === 'GET' || method === 'HEAD') return 'conversations:read';

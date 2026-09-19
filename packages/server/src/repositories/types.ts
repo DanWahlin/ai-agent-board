@@ -1,4 +1,11 @@
-import type { Task, AgentEvent, TaskRelationship, ExecutionAttempt } from '../types.js';
+import type { Task, AgentEvent, TaskRelationship, ExecutionAttempt, OrchestrationMode } from '../types.js';
+
+/** Private execution data for one exact attempt. Never serialize this object. */
+export interface AttemptExecutionContext {
+  attemptId?: string;
+  orchestrationMode: OrchestrationMode;
+  executionInput?: string;
+}
 
 export interface OrchestrationAggregateResult {
   task: Task;
@@ -38,9 +45,13 @@ export interface TaskRepository {
   getAttemptById(id: string): Promise<ExecutionAttempt | undefined>;
   getAttemptByExternalIdentity(source: string, key: string): Promise<ExecutionAttempt | undefined>;
   getAttemptsByTaskId(taskId: string): Promise<ExecutionAttempt[]>;
+  getCurrentExecution(taskId: string): Promise<AttemptExecutionContext>;
+  getAttemptExecution(attemptId: string): Promise<AttemptExecutionContext | undefined>;
   createAttemptIdempotent(attempt: ExecutionAttempt): Promise<{ attempt: ExecutionAttempt; created: boolean }>;
   /** Atomically persist a new task, its first attempt, and optional relationship. */
   createOrchestration(task: Task, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt?: number): Promise<OrchestrationAggregateResult>;
+  createOrchestration(task: Task, attempt: ExecutionAttempt, execution: AttemptExecutionContext, relatedTaskId?: string, relationshipCreatedAt?: number): Promise<OrchestrationAggregateResult>;
   /** Atomically persist an attempt, optional relationship, task reset, and run request. */
   continueOrchestration(taskId: string, updates: Partial<Task>, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt?: number, eligibility?: ContinuationEligibility): Promise<OrchestrationAggregateResult | undefined>;
+  continueOrchestration(taskId: string, updates: Partial<Task>, attempt: ExecutionAttempt, execution: AttemptExecutionContext, relatedTaskId?: string, relationshipCreatedAt?: number, eligibility?: ContinuationEligibility): Promise<OrchestrationAggregateResult | undefined>;
 }

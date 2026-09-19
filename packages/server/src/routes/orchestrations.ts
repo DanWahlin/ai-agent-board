@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { createHash, randomUUID } from 'node:crypto';
-import type { Task, ExecutionAttempt, AgentEvent } from '../types.js';
-import type { TaskRepository } from '../repositories/types.js';
+import type { Task, ExecutionAttempt, AgentEvent, OrchestrationMode } from '../types.js';
+import type { TaskRepository, AttemptExecutionContext } from '../repositories/types.js';
 import type { ProjectRepository } from '../repositories/project-types.js';
 import type { AgentManager } from '../services/agent-manager.js';
 import {
@@ -22,6 +22,7 @@ import {
 } from '@ai-agent-board/shared/constants.js';
 
 const MAX_ORCHESTRATION_OUTPUT = 512 * 1024;
+const MAX_EXECUTION_INPUT_LENGTH = 4_000;
 
 export function extractOrchestrationOutput(events: AgentEvent[]): string | undefined {
   const finalOutput = [...events].reverse().find((event) => event.type === 'complete' && event.metadata?.finalOutput === true)?.content.trim();
@@ -131,7 +132,15 @@ function firstDefined(body: Record<string, unknown>, keys: string[]): unknown {
   return undefined;
 }
 
-function orchestrationRequestIdentity(body: Record<string, unknown>): RequestIdentity {
+function executionInputIdentity(input: string | undefined): { length: number; sha256: string } | null {
+  return input === undefined ? null : { length: input.length, sha256: createHash('sha256').update(input).digest('hex') };
+}
+
+function orchestrationRequestIdentity(
+  body: Record<string, unknown>,
+  executionMode: OrchestrationMode = body.executionMode === 'agent-default' ? 'agent-default' : 'coding',
+  executionInput: string | undefined = typeof body.executionInput === 'string' ? body.executionInput : undefined,
+): RequestIdentity {
   const taskReference = firstDefined(body, ['task', 'taskId', 'item', 'itemId', 'continueTask', 'continueTaskId']);
   const identity: RequestIdentity = {
     kind: taskReference === undefined ? 'create' : 'continuation',
@@ -147,12 +156,43 @@ function orchestrationRequestIdentity(body: Record<string, unknown>): RequestIde
     timeoutMinutes: firstDefined(body, ['timeoutMinutes', 'timeout_minutes']),
     autoStart: firstDefined(body, ['autoStart', 'auto_start']) ?? true,
     provenance: sanitizeOrigin(body.provenance ?? body.origin) ?? null,
+    executionMode,
+    executionInput: executionInputIdentity(executionInput),
   };
   if (taskReference === undefined) {
     identity.useWorktree = body.useWorktree;
     identity.isolation = body.isolation;
   }
   return identity;
+}
+
+function requestedExecution(body: Record<string, unknown>, inherited?: AttemptExecutionContext): { context?: AttemptExecutionContext; error?: string } {
+  const suppliedMode = body.executionMode;
+  if (suppliedMode !== undefined && suppliedMode !== 'coding' && suppliedMode !== 'agent-default') {
+    return { error: 'executionMode must be coding or agent-default' };
+  }
+  if (body.executionInput !== undefined && typeof body.executionInput !== 'string') {
+    return { error: 'executionInput must be a string' };
+  }
+  if (typeof body.executionInput === 'string' && body.executionInput.length > MAX_EXECUTION_INPUT_LENGTH) {
+    return { error: `executionInput must be at most ${MAX_EXECUTION_INPUT_LENGTH} characters` };
+  }
+  const orchestrationMode = (suppliedMode ?? inherited?.orchestrationMode ?? 'coding') as OrchestrationMode;
+  const executionInput = typeof body.executionInput === 'string'
+    ? body.executionInput
+    : orchestrationMode === inherited?.orchestrationMode ? inherited?.executionInput : undefined;
+  if (orchestrationMode === 'coding' && body.executionInput !== undefined) {
+    return { error: 'executionInput is only valid for agent-default execution' };
+  }
+  if (orchestrationMode === 'agent-default' && executionInput === undefined) {
+    return { error: 'executionInput is required for agent-default execution' };
+  }
+  const contradictory = ['repoPath', 'worktreePath', 'branchName', 'baseBranch', 'useWorktree', 'isolation']
+    .find((field) => body[field] !== undefined);
+  if (orchestrationMode === 'agent-default' && contradictory) {
+    return { error: `${contradictory} is not valid for agent-default execution` };
+  }
+  return { context: { orchestrationMode, ...(executionInput !== undefined ? { executionInput } : {}) } };
 }
 
 function retryRequestIdentity(target: string, body: Record<string, unknown>): RequestIdentity {
@@ -307,12 +347,12 @@ function replayResponse(req: Request, res: Response, task: Task, attempt: Execut
     contract: { projectId: task.projectId, taskId: task.id, attemptId: attempt.id, deepLink } });
 }
 
-async function orchestrationTask(repo: TaskRepository, id: string): Promise<{ task: Task; attempts: ExecutionAttempt[] } | undefined> {
+async function orchestrationTask(repo: TaskRepository, id: string): Promise<{ task: Task; attempts: ExecutionAttempt[]; addressedAttempt?: ExecutionAttempt } | undefined> {
   const addressedAttempt = await repo.getAttemptById(id);
   const task = await repo.getById(addressedAttempt?.taskId ?? id);
   if (!task) return undefined;
   const attempts = await repo.getAttemptsByTaskId(task.id);
-  return attempts.length ? { task, attempts } : undefined;
+  return attempts.length ? { task, attempts, ...(addressedAttempt ? { addressedAttempt } : {}) } : undefined;
 }
 
 async function resolveRelatedTask(repo: TaskRepository, projectId: string, reference: unknown, res: Response): Promise<Task | undefined> {
@@ -338,6 +378,14 @@ export function createOrchestrationsRouter(
   agents: AgentManager,
 ): Router {
   const router = Router();
+
+  router.get('/capabilities', (_req: Request, res: Response) => {
+    res.json({
+      executionModes: ['coding', 'agent-default'],
+      maxExecutionInputLength: MAX_EXECUTION_INPUT_LENGTH,
+      cancellation: { exactAttempt: true },
+    });
+  });
 
   router.get('/:id', asyncHandler(async (req: Request, res: Response) => {
     const id = String(req.params.id);
@@ -377,6 +425,36 @@ export function createOrchestrationsRouter(
     res.json({ success: true });
   }));
 
+  router.post('/:id/cancel', asyncHandler(async (req: Request, res: Response) => {
+    const orchestration = await orchestrationTask(repo, String(req.params.id));
+    if (!orchestration) {
+      res.status(404).json({ error: 'orchestration not found' });
+      return;
+    }
+    if (typeof req.body.attemptId !== 'string' || !req.body.attemptId.trim()) {
+      res.status(400).json({ error: 'attemptId is required' });
+      return;
+    }
+    const current = await repo.getCurrentExecution(orchestration.task.id);
+    if (!current.attemptId || current.attemptId !== req.body.attemptId) {
+      res.status(409).json({ error: 'attempt is no longer current' });
+      return;
+    }
+    const stopped = await agents.stopAgent(orchestration.task.id, current.attemptId);
+    if (!stopped) {
+      res.status(409).json({ error: 'agent is not currently running for this orchestration' });
+      return;
+    }
+    await repo.clearRun(orchestration.task.id);
+    const task = await repo.update(orchestration.task.id, { agentStatus: 'failed' });
+    if (!task) {
+      res.status(404).json({ error: 'orchestration not found' });
+      return;
+    }
+    broadcastTaskUpdate(task);
+    res.json({ task, contract: { taskId: task.id, attemptId: current.attemptId } });
+  }));
+
   router.post('/:id/retry', asyncHandler(async (req: Request, res: Response) => {
     const key = req.header('Idempotency-Key')?.trim();
     if (!key) { res.status(400).json({ error: 'Idempotency-Key is required' }); return; }
@@ -384,6 +462,11 @@ export function createOrchestrationsRouter(
     const requestIdentity = retryRequestIdentity(String(req.params.id), req.body);
     const earlyReplay = await repo.getAttemptByExternalIdentity('hermes', key);
     if (earlyReplay) {
+      const storedRequest = storedSnapshot(earlyReplay).request;
+      if (storedRequest && typeof storedRequest === 'object' && !Array.isArray(storedRequest)) {
+        requestIdentity.executionMode = (storedRequest as RequestIdentity).executionMode;
+        requestIdentity.executionInput = (storedRequest as RequestIdentity).executionInput;
+      }
       const conflict = hasStoredRequestIdentity(earlyReplay)
         ? conflictsWithRequest(earlyReplay, requestIdentity)
         : await legacyRequestConflicts(earlyReplay, requestIdentity, repo, projects);
@@ -401,6 +484,12 @@ export function createOrchestrationsRouter(
       return;
     }
     const { task } = orchestration;
+    const execution = orchestration.addressedAttempt
+      ? await repo.getAttemptExecution(orchestration.addressedAttempt.id)
+      : await repo.getCurrentExecution(task.id);
+    if (!execution) { res.status(409).json({ error: 'orchestration attempt has no execution context' }); return; }
+    requestIdentity.executionMode = execution.orchestrationMode;
+    requestIdentity.executionInput = executionInputIdentity(execution.executionInput);
     if (!isValidAgentType(task.agentType)) { res.status(409).json({ error: 'orchestration has no supported agent' }); return; }
     const retryAgent = task.agentType;
     const timeoutMinutes = req.body.timeoutMinutes ?? req.body.timeout_minutes ?? task.timeoutMinutes;
@@ -449,7 +538,7 @@ export function createOrchestrationsRouter(
       timeoutMinutes,
       runRequestedAt: Date.now(),
       runClaimedAt: undefined,
-    }, expectedAttempt, undefined, undefined, { requiredAgentStatus: 'failed', requireRunnable: true });
+    }, expectedAttempt, execution, undefined, undefined, { requiredAgentStatus: 'failed', requireRunnable: true });
     if (!result) {
       res.status(409).json({ error: 'orchestration is no longer eligible for retry' });
       return;
@@ -479,6 +568,13 @@ export function createOrchestrationsRouter(
     if (suppliedKey && suppliedKey.length <= 200) {
       const earlyReplay = await repo.getAttemptByExternalIdentity('hermes', suppliedKey);
       if (earlyReplay) {
+        if (req.body.executionMode === undefined && req.body.executionInput === undefined) {
+          const storedRequest = storedSnapshot(earlyReplay).request;
+          if (storedRequest && typeof storedRequest === 'object' && !Array.isArray(storedRequest)) {
+            requestIdentity.executionMode = (storedRequest as RequestIdentity).executionMode;
+            requestIdentity.executionInput = (storedRequest as RequestIdentity).executionInput;
+          }
+        }
         const conflict = hasStoredRequestIdentity(earlyReplay)
           ? conflictsWithRequest(earlyReplay, requestIdentity)
           : await legacyRequestConflicts(earlyReplay, requestIdentity, repo, projects);
@@ -513,10 +609,6 @@ export function createOrchestrationsRouter(
       return;
     }
     const project = matches[0];
-    if (!project.repoPath) {
-      res.status(409).json({ error: 'project must have a repository path before coding work can start' });
-      return;
-    }
 
     const existingReference = req.body.task ?? req.body.taskId ?? req.body.item ?? req.body.itemId ?? req.body.continueTask ?? req.body.continueTaskId;
     const relatedReference = req.body.relatedItem ?? req.body.relatedTask ?? req.body.relatedTaskId;
@@ -533,6 +625,15 @@ export function createOrchestrationsRouter(
         res.status(409).json({ error: 'task reference is ambiguous', matches: taskMatches.map(({ id, title }) => ({ id, title })) }); return;
       }
       const existing = taskMatches[0];
+      const inheritedExecution = await repo.getCurrentExecution(existing.id);
+      const execution = requestedExecution(req.body, inheritedExecution);
+      if (!execution.context) { res.status(400).json({ error: execution.error }); return; }
+      const switchedToCoding = inheritedExecution.orchestrationMode === 'agent-default'
+        && execution.context.orchestrationMode === 'coding';
+      Object.assign(requestIdentity, orchestrationRequestIdentity(req.body, execution.context.orchestrationMode, execution.context.executionInput));
+      if (execution.context.orchestrationMode === 'coding' && !project.repoPath) {
+        res.status(409).json({ error: 'project must have a repository path before coding work can start' }); return;
+      }
       const requestedAgent = req.body.agentType ?? req.body.agent ?? existing.agentType;
       if (!isValidAgentType(requestedAgent)) { res.status(400).json({ error: 'agent must be a supported agent type' }); return; }
       const autoStart = req.body.autoStart ?? req.body.auto_start ?? true;
@@ -554,8 +655,12 @@ export function createOrchestrationsRouter(
       }
       const priority = req.body.priority ?? existing.priority;
       if (!isValidPriority(priority)) { res.status(400).json({ error: 'invalid priority' }); return; }
-      const baseBranch = req.body.baseBranch ?? existing.baseBranch;
-      const branchName = req.body.branchName ?? existing.branchName;
+      const baseBranch = execution.context.orchestrationMode === 'coding'
+        ? req.body.baseBranch ?? existing.baseBranch ?? (switchedToCoding ? project.defaultBaseBranch ?? 'main' : undefined)
+        : undefined;
+      const branchName = execution.context.orchestrationMode === 'coding'
+        ? req.body.branchName ?? existing.branchName ?? (switchedToCoding ? generateBranchName(key, continuationTitle) : undefined)
+        : undefined;
       if (baseBranch !== undefined && (typeof baseBranch !== 'string' || !isValidGitRef(baseBranch))) {
         res.status(400).json({ error: 'baseBranch is not a valid git ref' }); return;
       }
@@ -599,10 +704,19 @@ export function createOrchestrationsRouter(
       const aggregate = await repo.continueOrchestration(existing.id, {
         agentType: requestedAgent, title: continuationTitle, description: continuationDescription ?? existing.description,
         priority, baseBranch, branchName,
+        repoPath: execution.context.orchestrationMode === 'coding'
+          ? (switchedToCoding ? project.repoPath : existing.repoPath)
+          : undefined,
+        useWorktree: execution.context.orchestrationMode === 'coding'
+          ? (switchedToCoding ? true : existing.useWorktree)
+          : false,
+        worktreePath: switchedToCoding || execution.context.orchestrationMode === 'agent-default'
+          ? undefined
+          : existing.worktreePath,
         agentStatus: 'idle', columnId: autoStart ? 'in-progress' : 'backlog', archived: false,
         startedAt: undefined, completedAt: undefined, runRequestedAt: autoStart ? Date.now() : undefined,
         runClaimedAt: undefined, timeoutMinutes,
-      }, expectedAttempt, related?.id, Date.now(), { requireRunnable: true });
+      }, expectedAttempt, execution.context, related?.id, Date.now(), { requireRunnable: true });
       if (!aggregate) { res.status(409).json({ error: 'task is no longer eligible to start' }); return; }
       if (!aggregate.created) {
         if (conflictsWithRequest(aggregate.attempt, requestIdentity, expectedAttempt)) {
@@ -621,6 +735,14 @@ export function createOrchestrationsRouter(
       const deepLink = taskLink(req, reset.projectId, reset.id);
       res.status(202).json({ task: reset, attempt: aggregate.attempt, continuation: true,
         contract: { projectId: reset.projectId, taskId: reset.id, attemptId: aggregate.attempt.id, deepLink } });
+      return;
+    }
+
+    const execution = requestedExecution(req.body);
+    if (!execution.context) { res.status(400).json({ error: execution.error }); return; }
+    Object.assign(requestIdentity, orchestrationRequestIdentity(req.body, execution.context.orchestrationMode, execution.context.executionInput));
+    if (execution.context.orchestrationMode === 'coding' && !project.repoPath) {
+      res.status(409).json({ error: 'project must have a repository path before coding work can start' });
       return;
     }
 
@@ -671,19 +793,21 @@ export function createOrchestrationsRouter(
     }
 
     const requestedIsolation = req.body.isolation;
-    const useWorktree = req.body.useWorktree ?? (requestedIsolation === undefined ? true : requestedIsolation === 'worktree');
-    if (useWorktree !== true) {
+    const useWorktree = execution.context.orchestrationMode === 'coding'
+      ? req.body.useWorktree ?? (requestedIsolation === undefined ? true : requestedIsolation === 'worktree')
+      : false;
+    if (execution.context.orchestrationMode === 'coding' && useWorktree !== true) {
       res.status(400).json({ error: 'orchestrated coding tasks require worktree isolation' });
       return;
     }
 
-    const baseBranch = req.body.baseBranch ?? project.defaultBaseBranch ?? 'main';
-    if (typeof baseBranch !== 'string' || !isValidGitRef(baseBranch)) {
+    const baseBranch = execution.context.orchestrationMode === 'coding' ? req.body.baseBranch ?? project.defaultBaseBranch ?? 'main' : undefined;
+    if (baseBranch !== undefined && (typeof baseBranch !== 'string' || !isValidGitRef(baseBranch))) {
       res.status(400).json({ error: 'baseBranch is not a valid git ref' });
       return;
     }
-    const branchName = req.body.branchName || generateBranchName(key, title);
-    if (typeof branchName !== 'string' || !isValidGitRef(branchName)) {
+    const branchName = execution.context.orchestrationMode === 'coding' ? req.body.branchName || generateBranchName(key, title) : undefined;
+    if (branchName !== undefined && (typeof branchName !== 'string' || !isValidGitRef(branchName))) {
       res.status(400).json({ error: 'branchName is not a valid git ref' });
       return;
     }
@@ -699,13 +823,13 @@ export function createOrchestrationsRouter(
       title,
       description,
       projectId: project.id,
-      repoPath: project.repoPath,
+      repoPath: execution.context.orchestrationMode === 'coding' ? project.repoPath : undefined,
       agentType,
       priority,
       columnId: autoStart ? 'in-progress' : 'backlog',
       baseBranch,
       branchName,
-      useWorktree: true,
+      useWorktree,
       externalSource: 'hermes',
       externalKey: key,
       provenance,
@@ -750,7 +874,7 @@ export function createOrchestrationsRouter(
       }
     }
 
-    const aggregate = await repo.createOrchestration(task, expectedAttempt, relatedTask?.id, Date.now());
+    const aggregate = await repo.createOrchestration(task, expectedAttempt, execution.context, relatedTask?.id, Date.now());
     const deepLink = taskLink(req, aggregate.task.projectId, aggregate.task.id);
     if (!aggregate.created) {
       if (conflictsWithRequest(aggregate.attempt, requestIdentity, expectedAttempt)) {

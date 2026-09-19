@@ -167,13 +167,19 @@ create/update APIs. Task links use `/projects/:projectId/tasks/:taskId` and open
 the task panel directly.
 
 Service credentials are intentionally limited to these scopes:
-`projects:read`, `agents:read`, `tasks:create`, `tasks:read`, `tasks:message`, and
-`groups:create`. They cannot merge, create PRs, delete resources, or mutate
-projects. `API_KEY` remains the legacy full-access credential for the UI.
+`projects:read`, `agents:read`, `orchestrations:create`, `orchestrations:read`,
+`orchestrations:message`, `orchestrations:cancel`, `tasks:relationships`,
+`conversations:read`, and `conversations:write`. Cancellation has its own scope
+and requires the exact current attempt id. `API_KEY` remains the legacy
+full-access credential for the UI.
 | `COPILOT_MODEL` | `claude-opus-4-20250514` | Model for Copilot SDK sessions |
 | `CLAUDE_MODEL` | `claude-opus-4-20250514` | Model for Claude Code sessions |
 | `CODEX_MODEL` | `gpt-5.2-codex` | Model for OpenAI Codex sessions |
 | `HERMES_COMMAND` | `hermes` | Hermes CLI command or absolute path used to start the ACP server |
+| `HERMES_AGENT_DEFAULT_COMMAND` | `hermes` | Hermes command used by `agent-default` orchestrations; separate from a coding sandbox wrapper |
+| `HERMES_SANDBOXED` | _(unset)_ | When true, coding-mode Hermes uses a task-scoped sandbox provider and requires a managed worktree |
+| `HERMES_AUTO_APPROVE_TOOLS` | _(unset)_ | Coding-mode tool approval; effective only with `HERMES_SANDBOXED=true` |
+| `HERMES_AGENT_DEFAULT_AUTO_APPROVE_TOOLS` | _(unset)_ | Independent opt-in tool approval for agent-default Hermes runs |
 | `HERMES_MODEL` | `configured default` | Display/configured model label for Hermes sessions; Hermes ACP uses its own active config |
 | `HERMES_ACCEPT_HOOKS` | _(unset)_ | Set to `true` to auto-approve Hermes startup hook prompts in headless ACP sessions |
 | `OPENCLAW_COMMAND` | `openclaw` | OpenClaw CLI command or absolute path used to start the ACP bridge |

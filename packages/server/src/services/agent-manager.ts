@@ -3,8 +3,9 @@ import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import type { Task, TaskGroup, AgentEvent, AgentType } from '../types.js';
+import type { Task, TaskGroup, AgentEvent, AgentType, OrchestrationMode } from '../types.js';
 import type { TaskRepository } from '../repositories/types.js';
+import type { AttemptExecutionContext } from '../repositories/types.js';
 import type { AgentProvider, AgentSession, AgentInfo, AgentAttachment } from '@codewithdan/agent-sdk-core';
 import type { AgentEvent as CoreAgentEvent } from '@codewithdan/agent-sdk-core';
 import { CopilotProvider, ClaudeProvider, CodexProvider, OpenCodeProvider, HermesProvider, OpenClawProvider, GrokProvider } from '@codewithdan/agent-sdk-core';
@@ -40,6 +41,7 @@ function loadAttachmentAsBase64(filePath: string, displayName: string, mimeType:
 
 interface ManagedSession {
   runToken: symbol;
+  attemptId?: string;
   session?: AgentSession;
   taskScopedProvider?: AgentProvider;
   statusTransition?: Promise<void>;
@@ -62,6 +64,24 @@ const STOPPED_TASK_TTL_MS = 30_000;
 
 function usesTaskScopedHermesSandbox(): boolean {
   return ['1', 'true', 'yes', 'on'].includes((process.env.HERMES_SANDBOXED ?? '').trim().toLowerCase());
+}
+
+export function hermesCommandForExecution(
+  mode: OrchestrationMode,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  return mode === 'agent-default'
+    ? env.HERMES_AGENT_DEFAULT_COMMAND?.trim() || 'hermes'
+    : env.HERMES_COMMAND?.trim() || 'hermes';
+}
+
+export function usesTaskScopedHermesProvider(
+  agentType: AgentType,
+  mode: OrchestrationMode,
+  sandboxed: string | undefined = process.env.HERMES_SANDBOXED,
+): boolean {
+  const sandboxEnabled = ['1', 'true', 'yes', 'on'].includes((sandboxed ?? '').trim().toLowerCase());
+  return agentType === 'hermes' && (mode === 'agent-default' || sandboxEnabled);
 }
 
 // Upper bound on accumulated assistant prose kept for summary extraction.
@@ -501,6 +521,7 @@ export class AgentManager {
     task: Task,
     onStatusChange: (status: Task['agentStatus']) => void | Promise<void>,
     onWorktreeCreated?: (worktreePath: string) => void | Promise<void>,
+    execution: AttemptExecutionContext = { orchestrationMode: 'coding' },
   ): boolean {
     if (this.shuttingDown || this.sessions.has(task.id) || this.terminatingTasks.has(task.id)) return false;
 
@@ -584,13 +605,13 @@ export class AgentManager {
 
     // Synchronous placeholder to prevent duplicate starts during async session creation
     this.stoppedTasks.delete(task.id);
-    sessionGeneration = { runToken, startTime: sessionStartTime, agentType };
+    sessionGeneration = { runToken, attemptId: execution.attemptId, startTime: sessionStartTime, agentType };
     this.latestRunTokens.set(task.id, runToken);
     this.sessions.set(task.id, sessionGeneration);
 
     // Set up worktree if configured
     let worktreePath: string | undefined;
-    if (task.useWorktree) {
+    if (execution.orchestrationMode === 'coding' && task.useWorktree) {
       const priorWorktree = task.worktreePath;
       try {
         worktreePath = this.setupWorktree(task);
@@ -662,15 +683,16 @@ export class AgentManager {
       try {
         const workingDirectory = worktreePath || task.repoPath || process.cwd();
         let activeProvider = provider;
-        if (agentType === 'hermes' && usesTaskScopedHermesSandbox()) {
-          if (!worktreePath) throw new Error('Sandboxed Hermes requires a managed task worktree');
+        const needsTaskScopedHermes = usesTaskScopedHermesProvider(agentType, execution.orchestrationMode);
+        if (needsTaskScopedHermes) {
+          if (execution.orchestrationMode === 'coding' && !worktreePath) throw new Error('Sandboxed Hermes requires a managed task worktree');
           taskScopedProvider = new HermesProvider({
-            command: process.env.HERMES_COMMAND?.trim() || 'hermes',
-            env: {
+            command: hermesCommandForExecution(execution.orchestrationMode),
+            ...(execution.orchestrationMode === 'coding' ? { env: {
               HERMES_SANDBOX_WORKTREE: worktreePath,
               HERMES_SANDBOX_WORKTREE_ROOT: process.env.HERMES_SANDBOX_WORKTREE_ROOT
                 ?? '/var/lib/agentboard-worktrees',
-            },
+            } } : {}),
           });
           const entry = this.sessions.get(task.id);
           if (entry !== managed || this.latestRunTokens.get(task.id) !== runToken) return;
@@ -682,7 +704,7 @@ export class AgentManager {
         const hasGit = fs.existsSync(path.join(workingDirectory, '.git'));
         // Sanitize task content to prevent prompt injection via </context> breakout
         const safeTitle = task.title.replace(/[<>]/g, '');
-        const systemPrompt = `
+        const codingSystemPrompt = `
 <context>
 You are a coding agent working on a task in the project directory: ${workingDirectory}
 Task: ${safeTitle}
@@ -716,12 +738,14 @@ Optional list of any work you did not complete or that should be followed up. Om
         const session = await activeProvider.createSession({
           contextId: task.id,
           workingDirectory,
-          repoPath: task.repoPath,
-          systemPrompt,
+          repoPath: execution.orchestrationMode === 'coding' ? task.repoPath : undefined,
+          systemPrompt: execution.orchestrationMode === 'coding' ? codingSystemPrompt : '',
           hooks: hermesPermissionHooks(
             task.agentType,
+            execution.orchestrationMode,
             process.env.HERMES_AUTO_APPROVE_TOOLS,
             process.env.HERMES_SANDBOXED,
+            process.env.HERMES_AGENT_DEFAULT_AUTO_APPROVE_TOOLS,
           ),
           onEvent: (coreEvent: CoreAgentEvent) => {
             if (this.sessions.get(task.id) !== managed || this.latestRunTokens.get(task.id) !== runToken) return;
@@ -818,7 +842,9 @@ Optional list of any work you did not complete or that should be followed up. Om
 
         // Build prompt and execute — each provider returns a typed AgentResult
         const safeDescription = (task.description || '').replace(/[<>]/g, '');
-        const prompt = `${safeTitle}\n\n${safeDescription}`;
+        const prompt = execution.orchestrationMode === 'agent-default'
+          ? execution.executionInput ?? ''
+          : `${safeTitle}\n\n${safeDescription}`;
 
         // Load image attachments if available
         let agentAttachments: AgentAttachment[] | undefined;
@@ -949,9 +975,10 @@ Optional list of any work you did not complete or that should be followed up. Om
     return true;
   }
 
-  async stopAgent(taskId: string): Promise<boolean> {
+  async stopAgent(taskId: string, expectedAttemptId?: string): Promise<boolean> {
     const entry = this.sessions.get(taskId);
     if (!entry) return false;
+    if (expectedAttemptId && entry.attemptId !== expectedAttemptId) return false;
     let resolveStopCleanup!: () => void;
     const stopCleanup = new Promise<void>((resolve) => { resolveStopCleanup = resolve; });
     this.pendingCleanups.add(stopCleanup);

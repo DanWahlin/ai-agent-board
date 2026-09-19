@@ -148,6 +148,7 @@ export function migrateSqliteDatabase(db: Database.Database): void {
   if (!colNames.has('run_requested_at')) db.exec(`ALTER TABLE tasks ADD COLUMN run_requested_at INTEGER`);
   if (!colNames.has('run_claimed_at')) db.exec(`ALTER TABLE tasks ADD COLUMN run_claimed_at INTEGER`);
   if (!colNames.has('timeout_minutes')) db.exec(`ALTER TABLE tasks ADD COLUMN timeout_minutes INTEGER`);
+  if (!colNames.has('current_attempt_id')) db.exec(`ALTER TABLE tasks ADD COLUMN current_attempt_id TEXT`);
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_external_identity ON tasks(external_source, external_key) WHERE external_source IS NOT NULL AND external_key IS NOT NULL`);
 
   // Task groups table
@@ -200,6 +201,8 @@ export function migrateSqliteDatabase(db: Database.Database): void {
       auto_start INTEGER NOT NULL,
       timeout_minutes INTEGER,
       request_snapshot TEXT NOT NULL DEFAULT '{}',
+      orchestration_mode TEXT NOT NULL DEFAULT 'coding' CHECK (orchestration_mode IN ('coding', 'agent-default')),
+      execution_input TEXT,
       status TEXT NOT NULL CHECK (status IN ('pending', 'dispatched')),
       created_at INTEGER NOT NULL,
       UNIQUE (external_source, external_key)
@@ -208,6 +211,12 @@ export function migrateSqliteDatabase(db: Database.Database): void {
   const attemptCols = db.pragma('table_info(execution_attempts)') as { name: string }[];
   if (!attemptCols.some((column) => column.name === 'request_snapshot')) {
     db.exec(`ALTER TABLE execution_attempts ADD COLUMN request_snapshot TEXT NOT NULL DEFAULT '{}'`);
+  }
+  if (!attemptCols.some((column) => column.name === 'orchestration_mode')) {
+    db.exec(`ALTER TABLE execution_attempts ADD COLUMN orchestration_mode TEXT NOT NULL DEFAULT 'coding' CHECK (orchestration_mode IN ('coding', 'agent-default'))`);
+  }
+  if (!attemptCols.some((column) => column.name === 'execution_input')) {
+    db.exec(`ALTER TABLE execution_attempts ADD COLUMN execution_input TEXT`);
   }
   // Backfill orchestration history for tasks that predate execution_attempts.
   // The hex-encoded task id is stable, injective, and identifier-safe; the
@@ -241,6 +250,10 @@ export function migrateSqliteDatabase(db: Database.Database): void {
       )
   `);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_execution_attempts_task ON execution_attempts(task_id, created_at)`);
+  db.exec(`UPDATE tasks SET current_attempt_id = (
+    SELECT a.id FROM execution_attempts a WHERE a.task_id = tasks.id
+    ORDER BY a.created_at DESC, a.id DESC LIMIT 1
+  ) WHERE current_attempt_id IS NULL`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_column_id ON tasks(column_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_agent_status ON tasks(agent_status)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_column_created ON tasks(column_id, created_at)`);
@@ -492,6 +505,7 @@ function ensureSqliteProjectForeignKeys(db: Database.Database): void {
         run_requested_at INTEGER,
         run_claimed_at INTEGER,
         timeout_minutes INTEGER,
+        current_attempt_id TEXT,
         FOREIGN KEY (project_id) REFERENCES projects(id),
         FOREIGN KEY (group_id) REFERENCES task_groups(id) ON DELETE CASCADE
       );
@@ -500,13 +514,15 @@ function ensureSqliteProjectForeignKeys(db: Database.Database): void {
         id, title, description, priority, column_id, agent_status, created_at,
         started_at, completed_at, repo_path, branch_name, base_branch, use_worktree,
         worktree_path, agent_type, archived, project_id, group_id, group_order, summary,
-        external_source, external_key, provenance, run_requested_at, run_claimed_at, timeout_minutes
+        external_source, external_key, provenance, run_requested_at, run_claimed_at, timeout_minutes,
+        current_attempt_id
       )
       SELECT
         id, title, description, priority, column_id, agent_status, created_at,
         started_at, completed_at, repo_path, branch_name, base_branch, use_worktree,
         worktree_path, agent_type, archived, project_id, group_id, group_order, summary,
-        external_source, external_key, provenance, run_requested_at, run_claimed_at, timeout_minutes
+        external_source, external_key, provenance, run_requested_at, run_claimed_at, timeout_minutes,
+        current_attempt_id
       FROM tasks;
 
       DROP TABLE tasks;
@@ -630,6 +646,7 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
   await addCol('run_requested_at', 'BIGINT');
   await addCol('run_claimed_at', 'BIGINT');
   await addCol('timeout_minutes', 'INTEGER');
+  await addCol('current_attempt_id', 'TEXT');
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_external_identity ON tasks(external_source, external_key) WHERE external_source IS NOT NULL AND external_key IS NOT NULL`);
 
   // Task groups table
@@ -754,12 +771,30 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
       auto_start BOOLEAN NOT NULL,
       timeout_minutes INTEGER,
       request_snapshot TEXT NOT NULL DEFAULT '{}',
+      orchestration_mode TEXT NOT NULL DEFAULT 'coding' CHECK (orchestration_mode IN ('coding', 'agent-default')),
+      execution_input TEXT,
       status TEXT NOT NULL CHECK (status IN ('pending', 'dispatched')),
       created_at BIGINT NOT NULL,
       UNIQUE (external_source, external_key)
     )
   `);
   await pool.query(`ALTER TABLE execution_attempts ADD COLUMN IF NOT EXISTS request_snapshot TEXT NOT NULL DEFAULT '{}'`);
+  await pool.query(`ALTER TABLE execution_attempts ADD COLUMN IF NOT EXISTS orchestration_mode TEXT NOT NULL DEFAULT 'coding'`);
+  await pool.query(`ALTER TABLE execution_attempts ADD COLUMN IF NOT EXISTS execution_input TEXT`);
+  await pool.query(`UPDATE execution_attempts SET orchestration_mode='coding' WHERE orchestration_mode NOT IN ('coding', 'agent-default')`);
+  await pool.query(`
+    DO $$ BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname='execution_attempts_orchestration_mode_check'
+          AND conrelid='execution_attempts'::regclass
+      ) THEN
+        ALTER TABLE execution_attempts
+          ADD CONSTRAINT execution_attempts_orchestration_mode_check
+          CHECK (orchestration_mode IN ('coding', 'agent-default'));
+      END IF;
+    END $$
+  `);
   await pool.query(`
     INSERT INTO execution_attempts (
       id, task_id, external_source, external_key, title_snapshot,
@@ -784,6 +819,11 @@ export async function initPostgresDatabase(pool: Pool): Promise<void> {
     ON CONFLICT (external_source, external_key) DO NOTHING
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_execution_attempts_task ON execution_attempts(task_id, created_at)`);
+  await pool.query(`UPDATE tasks t SET current_attempt_id = (
+    SELECT a.id FROM execution_attempts a WHERE a.task_id = t.id
+    ORDER BY a.created_at DESC, a.id DESC LIMIT 1
+  ) WHERE t.current_attempt_id IS NULL
+    AND EXISTS (SELECT 1 FROM execution_attempts a WHERE a.task_id = t.id)`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS events (

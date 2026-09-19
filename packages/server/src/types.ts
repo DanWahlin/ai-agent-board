@@ -4,6 +4,7 @@ export type {
   ColumnId,
   AgentStatus,
   AgentType,
+  OrchestrationMode,
   Task,
   TaskRelationship,
   ExecutionAttempt,

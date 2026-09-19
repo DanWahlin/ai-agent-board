@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import type { Task, Priority, ColumnId, AgentStatus, AgentType, AgentEvent, TaskRelationship, ExecutionAttempt } from '../types.js';
-import type { TaskRepository, ContinuationEligibility } from './types.js';
+import type { TaskRepository, ContinuationEligibility, AttemptExecutionContext } from './types.js';
 import { errorMessage } from '../utils.js';
 
 interface TaskRow {
@@ -27,6 +27,7 @@ interface TaskRow {
   external_source: string | null; external_key: string | null; provenance: string | null;
   run_requested_at: number | null; run_claimed_at: number | null;
   timeout_minutes: number | null;
+  current_attempt_id: string | null;
 }
 
 function rowToTask(row: TaskRow): Task {
@@ -63,6 +64,8 @@ interface AttemptRow {
   title_snapshot: string; description_snapshot: string; agent_type: AgentType;
   related_task_id: string | null; auto_start: number; timeout_minutes: number | null;
   request_snapshot: string;
+  orchestration_mode: AttemptExecutionContext['orchestrationMode'];
+  execution_input: string | null;
   status: ExecutionAttempt['status']; created_at: number;
 }
 
@@ -327,6 +330,28 @@ export class SqliteTaskRepository implements TaskRepository {
     return (this.db.prepare('SELECT * FROM execution_attempts WHERE task_id=? ORDER BY created_at,id').all(taskId) as AttemptRow[]).map(rowToAttempt);
   }
 
+  async getCurrentExecution(taskId: string): Promise<AttemptExecutionContext> {
+    const row = this.db.prepare(`SELECT a.id, a.orchestration_mode, a.execution_input
+      FROM tasks t LEFT JOIN execution_attempts a ON a.id=t.current_attempt_id WHERE t.id=?`).get(taskId) as
+      { id: string | null; orchestration_mode: AttemptExecutionContext['orchestrationMode'] | null; execution_input: string | null } | undefined;
+    if (!row) return { orchestrationMode: 'coding' };
+    return {
+      ...(row.id ? { attemptId: row.id } : {}),
+      orchestrationMode: row.orchestration_mode ?? 'coding',
+      ...(row.execution_input != null ? { executionInput: row.execution_input } : {}),
+    };
+  }
+
+  async getAttemptExecution(attemptId: string): Promise<AttemptExecutionContext | undefined> {
+    const row = this.db.prepare(`SELECT id, orchestration_mode, execution_input FROM execution_attempts WHERE id=?`).get(attemptId) as
+      { id: string; orchestration_mode: AttemptExecutionContext['orchestrationMode']; execution_input: string | null } | undefined;
+    return row ? {
+      attemptId: row.id,
+      orchestrationMode: row.orchestration_mode ?? 'coding',
+      ...(row.execution_input != null ? { executionInput: row.execution_input } : {}),
+    } : undefined;
+  }
+
   async createAttemptIdempotent(attempt: ExecutionAttempt): Promise<{ attempt: ExecutionAttempt; created: boolean }> {
     const result = this.db.prepare(`INSERT OR IGNORE INTO execution_attempts
       (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,request_snapshot,status,created_at)
@@ -339,7 +364,10 @@ export class SqliteTaskRepository implements TaskRepository {
     return { attempt: existing, created: false };
   }
 
-  async createOrchestration(task: Task, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt = Date.now()) {
+  async createOrchestration(task: Task, attempt: ExecutionAttempt, executionOrRelated?: AttemptExecutionContext | string, relatedOrCreated?: string | number, createdAt = Date.now()) {
+    const execution = typeof executionOrRelated === 'object' ? executionOrRelated : { orchestrationMode: 'coding' as const };
+    const relatedTaskId = typeof executionOrRelated === 'object' ? relatedOrCreated as string | undefined : executionOrRelated;
+    const relationshipCreatedAt = typeof executionOrRelated === 'object' ? createdAt : typeof relatedOrCreated === 'number' ? relatedOrCreated : Date.now();
     return this.db.transaction(() => {
       const replayRow = this.db.prepare('SELECT * FROM execution_attempts WHERE external_source=? AND external_key=?')
         .get(attempt.externalSource, attempt.externalKey) as AttemptRow | undefined;
@@ -352,17 +380,29 @@ export class SqliteTaskRepository implements TaskRepository {
       this.insertTask(task);
       const persistedAttempt = { ...attempt, taskId: task.id };
       const inserted = this.db.prepare(`INSERT INTO execution_attempts
-        (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,request_snapshot,status,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(persistedAttempt.id, persistedAttempt.taskId, persistedAttempt.externalSource, persistedAttempt.externalKey,
+        (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,request_snapshot,orchestration_mode,execution_input,status,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(persistedAttempt.id, persistedAttempt.taskId, persistedAttempt.externalSource, persistedAttempt.externalKey,
           persistedAttempt.titleSnapshot, persistedAttempt.descriptionSnapshot, persistedAttempt.agentType, persistedAttempt.relatedTaskId ?? null,
-          persistedAttempt.autoStart ? 1 : 0, persistedAttempt.timeoutMinutes ?? null, persistedAttempt.requestSnapshot, persistedAttempt.status, persistedAttempt.createdAt);
+          persistedAttempt.autoStart ? 1 : 0, persistedAttempt.timeoutMinutes ?? null, persistedAttempt.requestSnapshot,
+          execution.orchestrationMode, execution.executionInput ?? null, persistedAttempt.status, persistedAttempt.createdAt);
       if (inserted.changes !== 1) throw new Error('failed to persist execution attempt');
+      this.db.prepare('UPDATE tasks SET current_attempt_id=? WHERE id=?').run(persistedAttempt.id, task.id);
       if (relatedTaskId) this.insertRelationship(task.id, relatedTaskId, relationshipCreatedAt);
       return { task, attempt: persistedAttempt, created: true };
     }).immediate();
   }
 
-  async continueOrchestration(taskId: string, updates: Partial<Task>, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt = Date.now(), eligibility?: ContinuationEligibility) {
+  async continueOrchestration(taskId: string, updates: Partial<Task>, attempt: ExecutionAttempt,
+    executionOrRelated?: AttemptExecutionContext | string, relatedOrCreated?: string | number,
+    createdOrEligibility?: number | ContinuationEligibility, eligibilityMaybe?: ContinuationEligibility) {
+    const execution = typeof executionOrRelated === 'object' ? executionOrRelated : { orchestrationMode: 'coding' as const };
+    const relatedTaskId = typeof executionOrRelated === 'object' ? relatedOrCreated as string | undefined : executionOrRelated;
+    const relationshipCreatedAt = typeof executionOrRelated === 'object'
+      ? typeof createdOrEligibility === 'number' ? createdOrEligibility : Date.now()
+      : typeof relatedOrCreated === 'number' ? relatedOrCreated : Date.now();
+    const eligibility = typeof executionOrRelated === 'object'
+      ? eligibilityMaybe ?? (typeof createdOrEligibility === 'object' ? createdOrEligibility : undefined)
+      : typeof createdOrEligibility === 'object' ? createdOrEligibility : undefined;
     // Acquire the writer lock before reading eligibility so separate SQLite
     // connections cannot both decide from the same stale task snapshot.
     return this.db.transaction(() => {
@@ -383,12 +423,14 @@ export class SqliteTaskRepository implements TaskRepository {
           || current.agentStatus === 'planning' || current.agentStatus === 'executing')) return undefined;
       const persistedAttempt = { ...attempt, taskId };
       this.db.prepare(`INSERT INTO execution_attempts
-        (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,request_snapshot,status,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(persistedAttempt.id, taskId, persistedAttempt.externalSource, persistedAttempt.externalKey,
+        (id,task_id,external_source,external_key,title_snapshot,description_snapshot,agent_type,related_task_id,auto_start,timeout_minutes,request_snapshot,orchestration_mode,execution_input,status,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(persistedAttempt.id, taskId, persistedAttempt.externalSource, persistedAttempt.externalKey,
           persistedAttempt.titleSnapshot, persistedAttempt.descriptionSnapshot, persistedAttempt.agentType, persistedAttempt.relatedTaskId ?? null,
-          persistedAttempt.autoStart ? 1 : 0, persistedAttempt.timeoutMinutes ?? null, persistedAttempt.requestSnapshot, persistedAttempt.status, persistedAttempt.createdAt);
+          persistedAttempt.autoStart ? 1 : 0, persistedAttempt.timeoutMinutes ?? null, persistedAttempt.requestSnapshot,
+          execution.orchestrationMode, execution.executionInput ?? null, persistedAttempt.status, persistedAttempt.createdAt);
       if (relatedTaskId) this.insertRelationship(taskId, relatedTaskId, relationshipCreatedAt);
       this.updateExisting(current, updates);
+      this.db.prepare('UPDATE tasks SET current_attempt_id=? WHERE id=?').run(persistedAttempt.id, taskId);
       const updatedRow = this.stmts.getById.get(taskId) as TaskRow | undefined;
       if (!updatedRow) throw new Error('failed to reset orchestration task');
       return { task: rowToTask(updatedRow), attempt: persistedAttempt, created: true };

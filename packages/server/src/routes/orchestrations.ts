@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { createHash, randomUUID } from 'node:crypto';
-import type { Task, ExecutionAttempt, AgentEvent, OrchestrationMode } from '../types.js';
+import type { Task, ExecutionAttempt, AgentEvent, OrchestrationMode, AgentType } from '../types.js';
 import type { TaskRepository, AttemptExecutionContext } from '../repositories/types.js';
 import type { ProjectRepository } from '../repositories/project-types.js';
 import type { AgentManager } from '../services/agent-manager.js';
@@ -166,7 +166,7 @@ function orchestrationRequestIdentity(
   return identity;
 }
 
-function requestedExecution(body: Record<string, unknown>, inherited?: AttemptExecutionContext): { context?: AttemptExecutionContext; error?: string } {
+function requestedExecution(body: Record<string, unknown>, agentType: AgentType, inherited?: AttemptExecutionContext): { context?: AttemptExecutionContext; error?: string } {
   const suppliedMode = body.executionMode;
   if (suppliedMode !== undefined && suppliedMode !== 'coding' && suppliedMode !== 'agent-default') {
     return { error: 'executionMode must be coding or agent-default' };
@@ -192,7 +192,10 @@ function requestedExecution(body: Record<string, unknown>, inherited?: AttemptEx
   if (orchestrationMode === 'agent-default' && contradictory) {
     return { error: `${contradictory} is not valid for agent-default execution` };
   }
-  return { context: { orchestrationMode, ...(executionInput !== undefined ? { executionInput } : {}) } };
+  if (orchestrationMode === 'agent-default' && agentType !== 'hermes') {
+    return { error: 'agent-default execution currently requires the Hermes agent' };
+  }
+  return { context: { agentType, orchestrationMode, ...(executionInput !== undefined ? { executionInput } : {}) } };
 }
 
 function retryRequestIdentity(target: string, body: Record<string, unknown>): RequestIdentity {
@@ -440,15 +443,13 @@ export function createOrchestrationsRouter(
       res.status(409).json({ error: 'attempt is no longer current' });
       return;
     }
-    const stopped = await agents.stopAgent(orchestration.task.id, current.attemptId);
-    if (!stopped) {
-      res.status(409).json({ error: 'agent is not currently running for this orchestration' });
-      return;
-    }
-    await repo.clearRun(orchestration.task.id);
-    const task = await repo.update(orchestration.task.id, { agentStatus: 'failed' });
+    // Stop the exact live session when present. A false result can also mean the
+    // durable attempt is still pending and has no in-memory session yet; the
+    // repository CAS below is the authority for whether cancellation is valid.
+    await agents.stopAgent(orchestration.task.id, current.attemptId);
+    const task = await repo.cancelCurrentAttempt(orchestration.task.id, current.attemptId);
     if (!task) {
-      res.status(404).json({ error: 'orchestration not found' });
+      res.status(409).json({ error: 'attempt is no longer current' });
       return;
     }
     broadcastTaskUpdate(task);
@@ -490,8 +491,8 @@ export function createOrchestrationsRouter(
     if (!execution) { res.status(409).json({ error: 'orchestration attempt has no execution context' }); return; }
     requestIdentity.executionMode = execution.orchestrationMode;
     requestIdentity.executionInput = executionInputIdentity(execution.executionInput);
-    if (!isValidAgentType(task.agentType)) { res.status(409).json({ error: 'orchestration has no supported agent' }); return; }
-    const retryAgent = task.agentType;
+    const retryAgent = execution.agentType;
+    if (!isValidAgentType(retryAgent)) { res.status(409).json({ error: 'orchestration attempt has no supported agent' }); return; }
     const timeoutMinutes = req.body.timeoutMinutes ?? req.body.timeout_minutes ?? task.timeoutMinutes;
     if (timeoutMinutes !== undefined && !isValidAgentTimeoutMinutes(timeoutMinutes)) {
       res.status(400).json({ error: `timeoutMinutes must be an integer between ${MIN_AGENT_TIMEOUT_MINUTES} and ${MAX_AGENT_TIMEOUT_MINUTES}` });
@@ -526,11 +527,12 @@ export function createOrchestrationsRouter(
       return;
     }
     const ready = agents.getAvailableAgents().find((agent) => agent.name === retryAgent);
-    if (!ready?.available) {
+    if (execution.orchestrationMode === 'coding' && !ready?.available) {
       res.status(409).json({ error: `agent ${retryAgent} is not ready`, reason: ready?.reason });
       return;
     }
     const result = await repo.continueOrchestration(task.id, {
+      agentType: retryAgent,
       agentStatus: 'idle',
       columnId: 'in-progress',
       startedAt: undefined,
@@ -626,7 +628,9 @@ export function createOrchestrationsRouter(
       }
       const existing = taskMatches[0];
       const inheritedExecution = await repo.getCurrentExecution(existing.id);
-      const execution = requestedExecution(req.body, inheritedExecution);
+      const requestedAgent = req.body.agentType ?? req.body.agent ?? existing.agentType;
+      if (!isValidAgentType(requestedAgent)) { res.status(400).json({ error: 'agent must be a supported agent type' }); return; }
+      const execution = requestedExecution(req.body, requestedAgent, inheritedExecution);
       if (!execution.context) { res.status(400).json({ error: execution.error }); return; }
       const switchedToCoding = inheritedExecution.orchestrationMode === 'agent-default'
         && execution.context.orchestrationMode === 'coding';
@@ -634,8 +638,6 @@ export function createOrchestrationsRouter(
       if (execution.context.orchestrationMode === 'coding' && !project.repoPath) {
         res.status(409).json({ error: 'project must have a repository path before coding work can start' }); return;
       }
-      const requestedAgent = req.body.agentType ?? req.body.agent ?? existing.agentType;
-      if (!isValidAgentType(requestedAgent)) { res.status(400).json({ error: 'agent must be a supported agent type' }); return; }
       const autoStart = req.body.autoStart ?? req.body.auto_start ?? true;
       if (typeof autoStart !== 'boolean') { res.status(400).json({ error: 'autoStart must be a boolean' }); return; }
       const timeoutMinutes = req.body.timeoutMinutes ?? req.body.timeout_minutes ?? existing.timeoutMinutes;
@@ -697,7 +699,7 @@ export function createOrchestrationsRouter(
       if (agents.isRunning(existing.id)) {
         res.status(409).json({ error: 'agent is already running for this task; use the message endpoint' }); return;
       }
-      if (autoStart) {
+      if (autoStart && execution.context.orchestrationMode === 'coding') {
         const ready = agents.getAvailableAgents().find((agent) => agent.name === requestedAgent);
         if (!ready?.available) { res.status(409).json({ error: `agent ${requestedAgent} is not ready`, reason: ready?.reason }); return; }
       }
@@ -738,17 +740,16 @@ export function createOrchestrationsRouter(
       return;
     }
 
-    const execution = requestedExecution(req.body);
+    const agentType = req.body.agentType ?? req.body.agent;
+    if (!isValidAgentType(agentType)) {
+      res.status(400).json({ error: 'agent is required and must be a supported agent type' });
+      return;
+    }
+    const execution = requestedExecution(req.body, agentType);
     if (!execution.context) { res.status(400).json({ error: execution.error }); return; }
     Object.assign(requestIdentity, orchestrationRequestIdentity(req.body, execution.context.orchestrationMode, execution.context.executionInput));
     if (execution.context.orchestrationMode === 'coding' && !project.repoPath) {
       res.status(409).json({ error: 'project must have a repository path before coding work can start' });
-      return;
-    }
-
-    const agentType = req.body.agentType ?? req.body.agent;
-    if (!isValidAgentType(agentType)) {
-      res.status(400).json({ error: 'agent is required and must be a supported agent type' });
       return;
     }
 
@@ -863,7 +864,7 @@ export function createOrchestrationsRouter(
       return;
     }
 
-    if (autoStart) {
+    if (autoStart && execution.context.orchestrationMode === 'coding') {
       const ready = agents.getAvailableAgents().find((agent) => agent.name === agentType);
       if (!ready?.available) {
         res.status(409).json({

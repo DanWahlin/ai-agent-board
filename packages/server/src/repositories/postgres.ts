@@ -173,6 +173,11 @@ export class PostgresTaskRepository implements TaskRepository {
   async requestRun(id:string,at:number) { const {rows}=await this.pool.query<TaskRow>('UPDATE tasks SET run_requested_at=$1,run_claimed_at=NULL WHERE id=$2 RETURNING *',[at,id]); return rows[0]?rowToTask(rows[0]):undefined; }
   async claimRun(id:string,at:number) { const staleBefore=at-30_000; const {rows}=await this.pool.query<TaskRow>("UPDATE tasks SET run_claimed_at=$1 WHERE id=$2 AND run_requested_at IS NOT NULL AND (run_claimed_at IS NULL OR run_claimed_at < $3) AND agent_status IN ('idle','planning') RETURNING *",[at,id,staleBefore]); return rows[0]?rowToTask(rows[0]):undefined; }
   async clearRun(id:string) { const {rows}=await this.pool.query<TaskRow>('UPDATE tasks SET run_requested_at=NULL,run_claimed_at=NULL WHERE id=$1 RETURNING *',[id]); return rows[0]?rowToTask(rows[0]):undefined; }
+  async cancelCurrentAttempt(id: string, attemptId: string) {
+    const { rows } = await this.pool.query<TaskRow>(`UPDATE tasks SET run_requested_at=NULL,run_claimed_at=NULL,agent_status='failed'
+      WHERE id=$1 AND current_attempt_id=$2 RETURNING *`, [id, attemptId]);
+    return rows[0] ? rowToTask(rows[0]) : undefined;
+  }
   async getPendingRuns(staleBefore=Date.now()-30_000) { const {rows}=await this.pool.query<TaskRow>("SELECT * FROM tasks WHERE run_requested_at IS NOT NULL AND (run_claimed_at IS NULL OR run_claimed_at < $1) AND agent_status IN ('idle','planning') ORDER BY run_requested_at",[staleBefore]); return rows.map(rowToTask); }
 
   async update(id: string, updates: Partial<Task>): Promise<Task | undefined> {
@@ -336,20 +341,20 @@ export class PostgresTaskRepository implements TaskRepository {
   }
 
   async getCurrentExecution(taskId: string): Promise<AttemptExecutionContext> {
-    const { rows } = await this.pool.query<{ id: string | null; orchestration_mode: AttemptExecutionContext['orchestrationMode'] | null; execution_input: string | null }>(
-      `SELECT a.id,a.orchestration_mode,a.execution_input FROM tasks t
+    const { rows } = await this.pool.query<{ id: string | null; agent_type: AttemptExecutionContext['agentType']; orchestration_mode: AttemptExecutionContext['orchestrationMode'] | null; execution_input: string | null }>(
+      `SELECT a.id,COALESCE(a.agent_type,t.agent_type) AS agent_type,a.orchestration_mode,a.execution_input FROM tasks t
        LEFT JOIN execution_attempts a ON a.id=t.current_attempt_id WHERE t.id=$1`, [taskId]);
     const row = rows[0];
-    if (!row) return { orchestrationMode: 'coding' };
-    return { ...(row.id ? { attemptId: row.id } : {}), orchestrationMode: row.orchestration_mode ?? 'coding',
+    if (!row) return { agentType: 'copilot', orchestrationMode: 'coding' };
+    return { ...(row.id ? { attemptId: row.id } : {}), agentType: row.agent_type, orchestrationMode: row.orchestration_mode ?? 'coding',
       ...(row.execution_input != null ? { executionInput: row.execution_input } : {}) };
   }
 
   async getAttemptExecution(attemptId: string): Promise<AttemptExecutionContext | undefined> {
-    const { rows } = await this.pool.query<{ id: string; orchestration_mode: AttemptExecutionContext['orchestrationMode']; execution_input: string | null }>(
-      'SELECT id,orchestration_mode,execution_input FROM execution_attempts WHERE id=$1', [attemptId]);
+    const { rows } = await this.pool.query<{ id: string; agent_type: AttemptExecutionContext['agentType']; orchestration_mode: AttemptExecutionContext['orchestrationMode']; execution_input: string | null }>(
+      'SELECT id,agent_type,orchestration_mode,execution_input FROM execution_attempts WHERE id=$1', [attemptId]);
     const row = rows[0];
-    return row ? { attemptId: row.id, orchestrationMode: row.orchestration_mode ?? 'coding',
+    return row ? { attemptId: row.id, agentType: row.agent_type, orchestrationMode: row.orchestration_mode ?? 'coding',
       ...(row.execution_input != null ? { executionInput: row.execution_input } : {}) } : undefined;
   }
 
@@ -366,10 +371,8 @@ export class PostgresTaskRepository implements TaskRepository {
     return { attempt: existing, created: false };
   }
 
-  async createOrchestration(task: Task, attempt: ExecutionAttempt, executionOrRelated?: AttemptExecutionContext | string, relatedOrCreated?: string | number, createdAt = Date.now()) {
-    const execution = typeof executionOrRelated === 'object' ? executionOrRelated : { orchestrationMode: 'coding' as const };
-    const relatedTaskId = typeof executionOrRelated === 'object' ? relatedOrCreated as string | undefined : executionOrRelated;
-    const relationshipCreatedAt = typeof executionOrRelated === 'object' ? createdAt : typeof relatedOrCreated === 'number' ? relatedOrCreated : Date.now();
+  async createOrchestration(task: Task, attempt: ExecutionAttempt, execution: AttemptExecutionContext,
+    relatedTaskId?: string, relationshipCreatedAt = Date.now()) {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -436,16 +439,8 @@ export class PostgresTaskRepository implements TaskRepository {
   }
 
   async continueOrchestration(taskId: string, updates: Partial<Task>, attempt: ExecutionAttempt,
-    executionOrRelated?: AttemptExecutionContext | string, relatedOrCreated?: string | number,
-    createdOrEligibility?: number | ContinuationEligibility, eligibilityMaybe?: ContinuationEligibility) {
-    const execution = typeof executionOrRelated === 'object' ? executionOrRelated : { orchestrationMode: 'coding' as const };
-    const relatedTaskId = typeof executionOrRelated === 'object' ? relatedOrCreated as string | undefined : executionOrRelated;
-    const relationshipCreatedAt = typeof executionOrRelated === 'object'
-      ? typeof createdOrEligibility === 'number' ? createdOrEligibility : Date.now()
-      : typeof relatedOrCreated === 'number' ? relatedOrCreated : Date.now();
-    const eligibility = typeof executionOrRelated === 'object'
-      ? eligibilityMaybe ?? (typeof createdOrEligibility === 'object' ? createdOrEligibility : undefined)
-      : typeof createdOrEligibility === 'object' ? createdOrEligibility : undefined;
+    execution: AttemptExecutionContext, relatedTaskId?: string, relationshipCreatedAt = Date.now(),
+    eligibility?: ContinuationEligibility) {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');

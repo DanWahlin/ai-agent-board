@@ -58,6 +58,11 @@ function manager(captured: AttemptExecutionContext[] = [], stopped: string[] = [
 }
 
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
 
 test('migration adds private attempt context and legacy tasks default to coding', async () => {
   const { db, repo } = setup();
@@ -69,7 +74,7 @@ test('migration adds private attempt context and legacy tasks default to coding'
     assert.ok(attemptColumns.has('execution_input'));
     db.prepare(`INSERT INTO tasks (id,project_id,title,description,priority,column_id,agent_status,agent_type,created_at)
       VALUES ('legacy','default','Legacy','','medium','backlog','idle','hermes',1)`).run();
-    assert.deepEqual(await repo.getCurrentExecution('legacy'), { orchestrationMode: 'coding' });
+    assert.deepEqual(await repo.getCurrentExecution('legacy'), { agentType: 'hermes', orchestrationMode: 'coding' });
   } finally { db.close(); }
 });
 
@@ -100,7 +105,7 @@ test('agent-default API persists exact private input without exposing it and dis
       assert.equal(body.task.useWorktree, false);
 
       await nextTurn();
-      assert.deepEqual(captured, [{ attemptId: body.attempt.id, orchestrationMode: 'agent-default', executionInput: secret }]);
+      assert.deepEqual(captured, [{ attemptId: body.attempt.id, agentType: 'hermes', orchestrationMode: 'agent-default', executionInput: secret }]);
       assert.deepEqual(await repo.getCurrentExecution(body.contract.taskId), captured[0]);
       const raw = db.prepare('SELECT orchestration_mode,execution_input FROM execution_attempts WHERE id=?').get(body.attempt.id) as Record<string, unknown>;
       assert.deepEqual(raw, { orchestration_mode: 'agent-default', execution_input: secret });
@@ -131,7 +136,7 @@ test('agent-default continuation replaces context and retry copies the exact fai
       assert.equal(response.status, 202);
       const continued = await response.json() as { attempt: { id: string } };
       assert.deepEqual(await repo.getCurrentExecution(created.task.id), {
-        attemptId: continued.attempt.id, orchestrationMode: 'agent-default', executionInput: 'second\nexact',
+        attemptId: continued.attempt.id, agentType: 'hermes', orchestrationMode: 'agent-default', executionInput: 'second\nexact',
       });
 
       await repo.update(created.task.id, { agentStatus: 'failed' });
@@ -142,7 +147,7 @@ test('agent-default continuation replaces context and retry copies the exact fai
       const retried = await response.json() as { attempt: { id: string } };
       await nextTurn();
       assert.deepEqual(captured.at(-1), {
-        attemptId: retried.attempt.id, orchestrationMode: 'agent-default', executionInput: 'second\nexact',
+        attemptId: retried.attempt.id, agentType: 'hermes', orchestrationMode: 'agent-default', executionInput: 'second\nexact',
       });
     });
   } finally { db.close(); }
@@ -163,7 +168,7 @@ test('manual start of a pending agent-default attempt loads its private executio
       const started = await fetch(`${base}/api/tasks/${created.task.id}/run`, { method: 'POST' });
       assert.equal(started.status, 200);
       assert.deepEqual(captured, [{
-        attemptId: created.attempt.id, orchestrationMode: 'agent-default', executionInput: 'private pending input',
+        attemptId: created.attempt.id, agentType: 'hermes', orchestrationMode: 'agent-default', executionInput: 'private pending input',
       }]);
     });
   } finally { db.close(); }
@@ -196,6 +201,26 @@ test('retrying an addressed historical attempt copies that attempt context, not 
   } finally { db.close(); }
 });
 
+test('agent-default launch is independent of coding-command readiness', async () => {
+  const { db, repo } = setup();
+  const captured: AttemptExecutionContext[] = [];
+  const unavailableCoding = manager(captured) as unknown as {
+    getAvailableAgents: () => Array<{ name: string; displayName: string; available: boolean; reason?: string }>;
+  };
+  unavailableCoding.getAvailableAgents = () => [{ name: 'hermes', displayName: 'Hermes', available: false, reason: 'coding wrapper missing' }];
+  try {
+    await withApi(repo, unavailableCoding as unknown as AgentManager, async (base) => {
+      const response = await fetch(`${base}/api/orchestrations`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'independent-readiness' },
+        body: JSON.stringify({ project: 'voice', agent: 'hermes', title: 'Independent', executionMode: 'agent-default', executionInput: 'private' }),
+      });
+      assert.equal(response.status, 201);
+      await nextTurn();
+      assert.equal(captured.at(-1)?.executionInput, 'private');
+    });
+  } finally { db.close(); }
+});
+
 test('agent-default validation rejects oversized or contradictory coding fields while coding remains the default', async () => {
   const { db, repo } = setup();
   try {
@@ -206,7 +231,89 @@ test('agent-default validation rejects oversized or contradictory coding fields 
       assert.equal((await post('too-long', { project: 'voice', agent: 'hermes', title: 'x', executionMode: 'agent-default', executionInput: 'x'.repeat(4001) })).status, 400);
       assert.equal((await post('branch', { project: 'voice', agent: 'hermes', title: 'x', executionMode: 'agent-default', executionInput: 'x', branchName: 'agent/x' })).status, 400);
       assert.equal((await post('coding-input', { project: 'voice', agent: 'hermes', title: 'x', executionInput: 'private' })).status, 400);
+      assert.equal((await post('wrong-agent', { project: 'voice', agent: 'copilot', title: 'x', executionMode: 'agent-default', executionInput: 'private' })).status, 400);
       assert.equal((await post('coding-default', { project: 'voice', agent: 'hermes', title: 'x' })).status, 409);
+    });
+  } finally { db.close(); }
+});
+
+test('agent-default attempt rejects runtime mutation through configure and manual run', async () => {
+  const { db, repo } = setup();
+  const captured: AttemptExecutionContext[] = [];
+  try {
+    await withApi(repo, manager(captured), async (base) => {
+      const response = await fetch(`${base}/api/orchestrations`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'runtime-bound' },
+        body: JSON.stringify({ project: 'voice', agent: 'hermes', title: 'Bound', executionMode: 'agent-default', executionInput: 'private', autoStart: false }),
+      });
+      assert.equal(response.status, 201);
+      const created = await response.json() as { task: { id: string } };
+      const configure = await fetch(`${base}/api/tasks/${created.task.id}/configure`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agentType: 'copilot' }),
+      });
+      assert.equal(configure.status, 409);
+
+      await repo.update(created.task.id, { agentType: 'copilot' });
+      const run = await fetch(`${base}/api/tasks/${created.task.id}/run`, { method: 'POST' });
+      assert.equal(run.status, 409);
+      assert.deepEqual(captured, []);
+    });
+  } finally { db.close(); }
+});
+
+test('exact cancellation succeeds before a pending attempt has a live session', async () => {
+  const { db, repo } = setup();
+  const pendingManager = manager() as unknown as { stopAgent: () => Promise<boolean> };
+  pendingManager.stopAgent = async () => false;
+  try {
+    await withApi(repo, pendingManager as unknown as AgentManager, async (base) => {
+      const createdResponse = await fetch(`${base}/api/orchestrations`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'pending-cancel' },
+        body: JSON.stringify({ project: 'voice', agent: 'hermes', title: 'Pending cancel',
+          executionMode: 'agent-default', executionInput: 'private', autoStart: false }),
+      });
+      const created = await createdResponse.json() as { task: { id: string }; attempt: { id: string } };
+      const cancelled = await fetch(`${base}/api/orchestrations/${created.task.id}/cancel`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ attemptId: created.attempt.id }),
+      });
+      assert.equal(cancelled.status, 200);
+      assert.equal((await repo.getById(created.task.id))?.agentStatus, 'failed');
+    });
+  } finally { db.close(); }
+});
+
+test('cancellation CAS cannot fail a successor created while stop is deferred', async () => {
+  const { db, repo } = setup();
+  const stopStarted = deferred<void>();
+  const stopFinished = deferred<boolean>();
+  const raceManager = {
+    getAvailableAgents: () => [{ name: 'hermes', displayName: 'Hermes', available: true }],
+    isRunning: () => false,
+    resetEvents: () => {},
+    startAgent: () => true,
+    stopAgent: async () => { stopStarted.resolve(); return stopFinished.promise; },
+  } as unknown as AgentManager;
+  try {
+    await withApi(repo, raceManager, async (base) => {
+      const send = (key: string, body: Record<string, unknown>) => fetch(`${base}/api/orchestrations`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': key }, body: JSON.stringify(body),
+      });
+      let response = await send('race-a', { project: 'voice', agent: 'hermes', title: 'Race',
+        executionMode: 'agent-default', executionInput: 'first', autoStart: false });
+      const first = await response.json() as { task: { id: string }; attempt: { id: string } };
+      const cancelPromise = fetch(`${base}/api/orchestrations/${first.task.id}/cancel`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ attemptId: first.attempt.id }),
+      });
+      await stopStarted.promise;
+      response = await send('race-b', { project: 'voice', task: first.task.id, executionInput: 'second', autoStart: false });
+      assert.equal(response.status, 202);
+      const second = await response.json() as { attempt: { id: string } };
+      stopFinished.resolve(true);
+      assert.equal((await cancelPromise).status, 409);
+      assert.deepEqual(await repo.getCurrentExecution(first.task.id), {
+        attemptId: second.attempt.id, agentType: 'hermes', orchestrationMode: 'agent-default', executionInput: 'second',
+      });
+      assert.equal((await repo.getById(first.task.id))?.agentStatus, 'idle');
     });
   } finally { db.close(); }
 });

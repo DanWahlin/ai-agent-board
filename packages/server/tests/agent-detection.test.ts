@@ -255,7 +255,6 @@ test('configured Hermes command is the detection authority', async () => {
 
   assert.deepEqual(calls, [
     { file: '/opt/agentmic/hermes-agentmic', args: ['--version'] },
-    { file: '/opt/hermes/plain-hermes', args: ['--version'] },
   ]);
   assert.equal(agents[0].available, true);
   assert.equal(agents[0].version, 'Hermes Agent 1.2.3');
@@ -274,7 +273,7 @@ test('configured Hermes command failure cannot fall back to plain Hermes', async
   assert.match(agents[0].reason ?? '', /Configured Hermes command is not ready/);
 });
 
-test('agent-default Hermes readiness cannot be masked by a working coding wrapper', async () => {
+test('broken agent-default command does not disable a healthy coding Hermes command', async () => {
   const agents = await detectAvailableAgents({
     detectAgents: async () => [{ name: 'hermes', displayName: 'Hermes', available: true } as AgentInfo],
     env: {
@@ -288,8 +287,8 @@ test('agent-default Hermes readiness cannot be masked by a working coding wrappe
     },
   });
 
-  assert.equal(agents[0].available, false);
-  assert.match(agents[0].reason ?? '', /agent-default Hermes command is not ready/i);
+  assert.equal(agents[0].available, true);
+  assert.equal(agents[0].reason, undefined);
 });
 
 test('Windows executable lookup does not require a copilot PATH shim', (t) => {

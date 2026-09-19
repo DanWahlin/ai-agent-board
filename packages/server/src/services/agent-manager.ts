@@ -521,9 +521,11 @@ export class AgentManager {
     task: Task,
     onStatusChange: (status: Task['agentStatus']) => void | Promise<void>,
     onWorktreeCreated?: (worktreePath: string) => void | Promise<void>,
-    execution: AttemptExecutionContext = { orchestrationMode: 'coding' },
+    execution: AttemptExecutionContext = { agentType: task.agentType ?? 'copilot', orchestrationMode: 'coding' },
   ): boolean {
     if (this.shuttingDown || this.sessions.has(task.id) || this.terminatingTasks.has(task.id)) return false;
+    if (execution.agentType !== task.agentType) return false;
+    if (execution.orchestrationMode === 'agent-default' && task.agentType !== 'hermes') return false;
 
     const agentType = task.agentType || 'copilot';
     const sessionStartTime = Date.now();
@@ -598,7 +600,7 @@ export class AgentManager {
 
     // Check if agent is available
     const agentInfo = this.availableAgents.find(a => a.name === agentType);
-    if (!agentInfo?.available) {
+    if (execution.orchestrationMode === 'coding' && !agentInfo?.available) {
       void finishTermination('failed', `Agent ${provider.displayName} is not available: ${agentInfo?.reason || 'unknown reason'}`);
       return true;
     }

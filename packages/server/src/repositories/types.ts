@@ -1,8 +1,9 @@
-import type { Task, AgentEvent, TaskRelationship, ExecutionAttempt, OrchestrationMode } from '../types.js';
+import type { Task, AgentEvent, TaskRelationship, ExecutionAttempt, OrchestrationMode, AgentType } from '../types.js';
 
 /** Private execution data for one exact attempt. Never serialize this object. */
 export interface AttemptExecutionContext {
   attemptId?: string;
+  agentType: AgentType;
   orchestrationMode: OrchestrationMode;
   executionInput?: string;
 }
@@ -31,6 +32,8 @@ export interface TaskRepository {
   requestRun(id: string, requestedAt: number): Promise<Task | undefined>;
   claimRun(id: string, claimedAt: number): Promise<Task | undefined>;
   clearRun(id: string): Promise<Task | undefined>;
+  /** Fail and clear only when the exact attempt is still current. */
+  cancelCurrentAttempt(id: string, attemptId: string): Promise<Task | undefined>;
   getPendingRuns(staleBefore?: number): Promise<Task[]>;
   update(id: string, updates: Partial<Task>): Promise<Task | undefined>;
   delete(id: string): Promise<boolean>;
@@ -49,9 +52,7 @@ export interface TaskRepository {
   getAttemptExecution(attemptId: string): Promise<AttemptExecutionContext | undefined>;
   createAttemptIdempotent(attempt: ExecutionAttempt): Promise<{ attempt: ExecutionAttempt; created: boolean }>;
   /** Atomically persist a new task, its first attempt, and optional relationship. */
-  createOrchestration(task: Task, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt?: number): Promise<OrchestrationAggregateResult>;
   createOrchestration(task: Task, attempt: ExecutionAttempt, execution: AttemptExecutionContext, relatedTaskId?: string, relationshipCreatedAt?: number): Promise<OrchestrationAggregateResult>;
   /** Atomically persist an attempt, optional relationship, task reset, and run request. */
-  continueOrchestration(taskId: string, updates: Partial<Task>, attempt: ExecutionAttempt, relatedTaskId?: string, relationshipCreatedAt?: number, eligibility?: ContinuationEligibility): Promise<OrchestrationAggregateResult | undefined>;
   continueOrchestration(taskId: string, updates: Partial<Task>, attempt: ExecutionAttempt, execution: AttemptExecutionContext, relatedTaskId?: string, relationshipCreatedAt?: number, eligibility?: ContinuationEligibility): Promise<OrchestrationAggregateResult | undefined>;
 }

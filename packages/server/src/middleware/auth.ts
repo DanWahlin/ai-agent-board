@@ -35,6 +35,7 @@ export function requiredScope(req: Request): ServiceScope | undefined {
   if (p === '/agents/refresh') return 'agents:read';
   if (method === 'GET' && (p === '/projects' || (/^\/projects\/[^/]+$/.test(p) && p !== '/projects/config'))) return 'projects:read';
   if (p === '/orchestrations' && method === 'POST') return 'orchestrations:create';
+  if (p === '/orchestrations/capabilities' && method === 'GET') return 'orchestrations:read';
   if (/^\/orchestrations\/[^/]+\/retry$/.test(p) && method === 'POST') return 'orchestrations:create';
   if (/^\/orchestrations\/[^/]+$/.test(p) && method === 'GET') return 'orchestrations:read';
   if (/^\/orchestrations\/[^/]+\/message$/.test(p) && method === 'POST') return 'orchestrations:message';

@@ -48,6 +48,7 @@ const attempt = (id: string, taskId: string, key = id): ExecutionAttempt => ({
   status: 'pending', createdAt: 1,
 });
 
+const codingExecution = { agentType: 'hermes' as const, orchestrationMode: 'coding' as const };
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 const project: Project = { id: 'project-a', name: 'Project A', aliases: ['alpha'], repoPath: '/repo', isDefault: false, createdAt: 1, updatedAt: 1 };
@@ -595,7 +596,7 @@ test('SQLite locked continuation rejects a claimed idle execution', async () => 
     const active = { ...task('claimed-idle'), runRequestedAt: 10, runClaimedAt: 11 };
     await repo.create(active);
     const result = await repo.continueOrchestration(active.id, { title: 'overwritten', runRequestedAt: undefined, runClaimedAt: undefined },
-      attempt('claimed-idle-attempt', active.id), undefined, 1, { requireRunnable: true });
+      attempt('claimed-idle-attempt', active.id), codingExecution, undefined, 1, { requireRunnable: true });
     assert.equal(result, undefined);
     const persisted = await repo.getById(active.id);
     assert.deepEqual({ title: persisted?.title, status: persisted?.agentStatus, requested: persisted?.runRequestedAt, claimed: persisted?.runClaimedAt },
@@ -612,13 +613,13 @@ test('SQLite orchestration aggregates roll back creates and continuations when r
     await repo.create(task('other-project', 'project-b'));
 
     const createdTask = { ...task('aggregate-create'), externalSource: 'hermes', externalKey: 'aggregate-create' };
-    await assert.rejects(repo.createOrchestration(createdTask, attempt('create-attempt', createdTask.id, 'aggregate-create'), 'other-project', 10), /same project/);
+    await assert.rejects(repo.createOrchestration(createdTask, attempt('create-attempt', createdTask.id, 'aggregate-create'), codingExecution, 'other-project', 10), /same project/);
     assert.equal(await repo.getById(createdTask.id), undefined);
     assert.equal(await repo.getAttemptById('create-attempt'), undefined);
     assert.deepEqual(await repo.getRelationships('other-project'), []);
 
     const before = await repo.getById('same-project');
-    await assert.rejects(repo.continueOrchestration('same-project', { title: 'should roll back', priority: 'high' }, attempt('continue-attempt', 'same-project', 'aggregate-continue'), 'other-project', 11), /same project/);
+    await assert.rejects(repo.continueOrchestration('same-project', { title: 'should roll back', priority: 'high' }, attempt('continue-attempt', 'same-project', 'aggregate-continue'), codingExecution, 'other-project', 11), /same project/);
     assert.deepEqual(await repo.getById('same-project'), before);
     assert.equal(await repo.getAttemptById('continue-attempt'), undefined);
     assert.deepEqual(await repo.getRelationships('same-project'), []);
@@ -632,9 +633,9 @@ test('SQLite continuation eligibility accepts only one distinct-key dispatch per
     await repo.create({ ...task('race-card'), agentStatus: 'failed' });
     const updates = { agentStatus: 'idle' as const, columnId: 'in-progress' as const, runRequestedAt: 100 };
     const [first, second] = await Promise.all([
-      repo.continueOrchestration('race-card', updates, { ...attempt('race-a', 'race-card', 'race-key-a'), autoStart: true, status: 'dispatched' }, undefined, 1,
+      repo.continueOrchestration('race-card', updates, { ...attempt('race-a', 'race-card', 'race-key-a'), autoStart: true, status: 'dispatched' }, codingExecution, undefined, 1,
         { requiredAgentStatus: 'failed', requireRunnable: true }),
-      repo.continueOrchestration('race-card', updates, { ...attempt('race-b', 'race-card', 'race-key-b'), autoStart: true, status: 'dispatched' }, undefined, 1,
+      repo.continueOrchestration('race-card', updates, { ...attempt('race-b', 'race-card', 'race-key-b'), autoStart: true, status: 'dispatched' }, codingExecution, undefined, 1,
         { requiredAgentStatus: 'failed', requireRunnable: true }),
     ]);
     assert.equal([first, second].filter(Boolean).length, 1);
@@ -652,6 +653,7 @@ test('SQLite continuation accepts a retry after a prior claimed run reached a te
       'completed-card',
       { agentStatus: 'idle', columnId: 'in-progress', runRequestedAt: 100, runClaimedAt: undefined },
       { ...attempt('retry-after-terminal', 'completed-card', 'retry-after-terminal-key'), autoStart: true, status: 'dispatched' },
+      codingExecution,
       undefined,
       1,
       { requiredAgentStatus: 'failed', requireRunnable: true },
@@ -689,7 +691,7 @@ test('Postgres continuation locks by task and revalidates eligibility before upd
     release: () => undefined,
   };
   const repo = new PostgresTaskRepository({ connect: async () => client } as never);
-  const result = await repo.continueOrchestration(lockedTask.id, { runRequestedAt: 200 }, proposed, undefined, 1, { requireRunnable: true });
+  const result = await repo.continueOrchestration(lockedTask.id, { runRequestedAt: 200 }, proposed, codingExecution, undefined, 1, { requireRunnable: true });
   assert.equal(result, undefined);
   assert.deepEqual(calls.slice(0, 4).map(({ sql }) => sql), [
     'BEGIN',
@@ -760,13 +762,13 @@ test('Postgres orchestration aggregate commits successful work and rolls back re
     };
     const repo = new PostgresTaskRepository({ connect: async () => client } as never);
     if (relationSucceeds) {
-      const result = await repo.createOrchestration(aggregateTask, aggregateAttempt, 'related-task', 7);
+      const result = await repo.createOrchestration(aggregateTask, aggregateAttempt, codingExecution, 'related-task', 7);
       assert.equal(result.created, true);
       assert.match(calls.find((sql) => sql.startsWith('INSERT INTO tasks')) ?? '',
         /ON CONFLICT\(external_source,external_key\)\s+WHERE external_source IS NOT NULL AND external_key IS NOT NULL\s+DO NOTHING/);
       assert.deepEqual(calls.filter((sql) => ['BEGIN', 'COMMIT', 'ROLLBACK'].includes(sql)), ['BEGIN', 'COMMIT']);
     } else {
-      await assert.rejects(repo.createOrchestration(aggregateTask, aggregateAttempt, 'cross-project-task', 7), /same project/);
+      await assert.rejects(repo.createOrchestration(aggregateTask, aggregateAttempt, codingExecution, 'cross-project-task', 7), /same project/);
       assert.deepEqual(calls.filter((sql) => ['BEGIN', 'COMMIT', 'ROLLBACK'].includes(sql)), ['BEGIN', 'ROLLBACK']);
     }
     assert.equal(released, true);
@@ -806,7 +808,7 @@ test('Postgres create orchestration checks attempt replay before writes and retu
     release: () => { released = true; },
   };
   const repo = new PostgresTaskRepository({ connect: async () => client } as never);
-  const result = await repo.createOrchestration(proposedTask, proposedAttempt, 'unrelated-card', 7);
+  const result = await repo.createOrchestration(proposedTask, proposedAttempt, codingExecution, 'unrelated-card', 7);
 
   assert.equal(result.created, false);
   assert.equal(result.task.id, originalTask.id);

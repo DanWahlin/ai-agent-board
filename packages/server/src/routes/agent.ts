@@ -60,6 +60,11 @@ export function createAgentRouter(
       res.status(400).json({ error: `invalid agentType: must be one of ${VALID_AGENT_TYPES.join(', ')}` });
       return;
     }
+    const execution = await repo.getCurrentExecution(id);
+    if (agentType !== undefined && execution.orchestrationMode === 'agent-default' && agentType !== execution.agentType) {
+      res.status(409).json({ error: 'agent-default runtime is bound to its execution attempt' });
+      return;
+    }
     if (typeof branchName === 'string' && branchName !== '' && !isValidGitRef(branchName)) {
       res.status(400).json({ error: 'branchName contains invalid characters' });
       return;
@@ -117,6 +122,12 @@ export function createAgentRouter(
       res.status(409).json({ error: 'agent already running for this task' });
       return;
     }
+    const execution = await repo.getCurrentExecution(task.id);
+    if (execution.agentType !== task.agentType
+      || (execution.orchestrationMode === 'agent-default' && task.agentType !== 'hermes')) {
+      res.status(409).json({ error: 'task runtime does not match its execution attempt' });
+      return;
+    }
 
     // Persist intent before claiming; a crash between these operations is recovered at startup.
     agentManager.resetEvents(task.id);
@@ -151,7 +162,6 @@ export function createAgentRouter(
       }
     }
 
-    const execution = await repo.getCurrentExecution(task.id);
     const started = agentManager.startAgent(
       updated,
       async (status) => {

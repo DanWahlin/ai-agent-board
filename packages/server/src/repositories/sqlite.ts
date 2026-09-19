@@ -201,6 +201,11 @@ export class SqliteTaskRepository implements TaskRepository {
   async requestRun(id: string, at: number) { this.db.prepare('UPDATE tasks SET run_requested_at=?, run_claimed_at=NULL WHERE id=?').run(at,id); return this.getById(id); }
   async claimRun(id: string, at: number) { const staleBefore=at-30_000; const r=this.db.prepare("UPDATE tasks SET run_claimed_at=? WHERE id=? AND run_requested_at IS NOT NULL AND (run_claimed_at IS NULL OR run_claimed_at < ?) AND agent_status IN ('idle','planning')").run(at,id,staleBefore); return r.changes ? this.getById(id) : undefined; }
   async clearRun(id: string) { this.db.prepare('UPDATE tasks SET run_requested_at=NULL, run_claimed_at=NULL WHERE id=?').run(id); return this.getById(id); }
+  async cancelCurrentAttempt(id: string, attemptId: string) {
+    const result = this.db.prepare(`UPDATE tasks SET run_requested_at=NULL, run_claimed_at=NULL, agent_status='failed'
+      WHERE id=? AND current_attempt_id=?`).run(id, attemptId);
+    return result.changes ? this.getById(id) : undefined;
+  }
   async getPendingRuns(staleBefore = Date.now()-30_000) { return (this.db.prepare("SELECT * FROM tasks WHERE run_requested_at IS NOT NULL AND (run_claimed_at IS NULL OR run_claimed_at < ?) AND agent_status IN ('idle','planning') ORDER BY run_requested_at").all(staleBefore) as TaskRow[]).map(rowToTask); }
 
   async update(id: string, updates: Partial<Task>): Promise<Task | undefined> {
@@ -331,22 +336,24 @@ export class SqliteTaskRepository implements TaskRepository {
   }
 
   async getCurrentExecution(taskId: string): Promise<AttemptExecutionContext> {
-    const row = this.db.prepare(`SELECT a.id, a.orchestration_mode, a.execution_input
+    const row = this.db.prepare(`SELECT a.id, COALESCE(a.agent_type,t.agent_type) AS agent_type, a.orchestration_mode, a.execution_input
       FROM tasks t LEFT JOIN execution_attempts a ON a.id=t.current_attempt_id WHERE t.id=?`).get(taskId) as
-      { id: string | null; orchestration_mode: AttemptExecutionContext['orchestrationMode'] | null; execution_input: string | null } | undefined;
-    if (!row) return { orchestrationMode: 'coding' };
+      { id: string | null; agent_type: AttemptExecutionContext['agentType']; orchestration_mode: AttemptExecutionContext['orchestrationMode'] | null; execution_input: string | null } | undefined;
+    if (!row) return { agentType: 'copilot', orchestrationMode: 'coding' };
     return {
       ...(row.id ? { attemptId: row.id } : {}),
+      agentType: row.agent_type,
       orchestrationMode: row.orchestration_mode ?? 'coding',
       ...(row.execution_input != null ? { executionInput: row.execution_input } : {}),
     };
   }
 
   async getAttemptExecution(attemptId: string): Promise<AttemptExecutionContext | undefined> {
-    const row = this.db.prepare(`SELECT id, orchestration_mode, execution_input FROM execution_attempts WHERE id=?`).get(attemptId) as
-      { id: string; orchestration_mode: AttemptExecutionContext['orchestrationMode']; execution_input: string | null } | undefined;
+    const row = this.db.prepare(`SELECT id, agent_type, orchestration_mode, execution_input FROM execution_attempts WHERE id=?`).get(attemptId) as
+      { id: string; agent_type: AttemptExecutionContext['agentType']; orchestration_mode: AttemptExecutionContext['orchestrationMode']; execution_input: string | null } | undefined;
     return row ? {
       attemptId: row.id,
+      agentType: row.agent_type,
       orchestrationMode: row.orchestration_mode ?? 'coding',
       ...(row.execution_input != null ? { executionInput: row.execution_input } : {}),
     } : undefined;
@@ -364,10 +371,8 @@ export class SqliteTaskRepository implements TaskRepository {
     return { attempt: existing, created: false };
   }
 
-  async createOrchestration(task: Task, attempt: ExecutionAttempt, executionOrRelated?: AttemptExecutionContext | string, relatedOrCreated?: string | number, createdAt = Date.now()) {
-    const execution = typeof executionOrRelated === 'object' ? executionOrRelated : { orchestrationMode: 'coding' as const };
-    const relatedTaskId = typeof executionOrRelated === 'object' ? relatedOrCreated as string | undefined : executionOrRelated;
-    const relationshipCreatedAt = typeof executionOrRelated === 'object' ? createdAt : typeof relatedOrCreated === 'number' ? relatedOrCreated : Date.now();
+  async createOrchestration(task: Task, attempt: ExecutionAttempt, execution: AttemptExecutionContext,
+    relatedTaskId?: string, relationshipCreatedAt = Date.now()) {
     return this.db.transaction(() => {
       const replayRow = this.db.prepare('SELECT * FROM execution_attempts WHERE external_source=? AND external_key=?')
         .get(attempt.externalSource, attempt.externalKey) as AttemptRow | undefined;
@@ -393,16 +398,8 @@ export class SqliteTaskRepository implements TaskRepository {
   }
 
   async continueOrchestration(taskId: string, updates: Partial<Task>, attempt: ExecutionAttempt,
-    executionOrRelated?: AttemptExecutionContext | string, relatedOrCreated?: string | number,
-    createdOrEligibility?: number | ContinuationEligibility, eligibilityMaybe?: ContinuationEligibility) {
-    const execution = typeof executionOrRelated === 'object' ? executionOrRelated : { orchestrationMode: 'coding' as const };
-    const relatedTaskId = typeof executionOrRelated === 'object' ? relatedOrCreated as string | undefined : executionOrRelated;
-    const relationshipCreatedAt = typeof executionOrRelated === 'object'
-      ? typeof createdOrEligibility === 'number' ? createdOrEligibility : Date.now()
-      : typeof relatedOrCreated === 'number' ? relatedOrCreated : Date.now();
-    const eligibility = typeof executionOrRelated === 'object'
-      ? eligibilityMaybe ?? (typeof createdOrEligibility === 'object' ? createdOrEligibility : undefined)
-      : typeof createdOrEligibility === 'object' ? createdOrEligibility : undefined;
+    execution: AttemptExecutionContext, relatedTaskId?: string, relationshipCreatedAt = Date.now(),
+    eligibility?: ContinuationEligibility) {
     // Acquire the writer lock before reading eligibility so separate SQLite
     // connections cannot both decide from the same stale task snapshot.
     return this.db.transaction(() => {

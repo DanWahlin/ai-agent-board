@@ -49,6 +49,7 @@ test('scope mapping covers allowlisted project, agent, and relationship reads an
   assert.equal(requiredScope(request('/projects/a', 'GET')), 'projects:read');
   assert.equal(requiredScope(request('/projects/config', 'GET')), undefined);
   assert.equal(requiredScope(request('/agents', 'GET')), 'agents:read');
+  assert.equal(requiredScope(request('/orchestrations/capabilities', 'GET')), 'orchestrations:read');
   assert.equal(requiredScope(request('/orchestrations/a/cancel', 'POST')), 'orchestrations:cancel');
   assert.equal(requiredScope(request('/tasks/a/relationships', 'GET')), 'tasks:relationships');
   assert.equal(requiredScope(request('/tasks/a/relationships', 'POST')), 'tasks:relationships');
@@ -74,6 +75,8 @@ test('middleware enforces exact service scopes while preserving tokenless browse
       assert.equal((await fetch(`${base}/agents`)).status, 200);
       assert.equal((await fetch(`${base}/tasks/t/relationships`)).status, 200);
       assert.equal((await fetch(`${base}/orchestrations/task-id`)).status, 401);
+      assert.equal((await fetch(`${base}/orchestrations/capabilities`, { headers: bearer('read-token') })).status, 200);
+      assert.equal((await fetch(`${base}/orchestrations/capabilities`, { headers: bearer('create-token') })).status, 403);
 
       assert.equal((await fetch(`${base}/projects`, { headers: bearer('projects-token') })).status, 200);
       assert.equal((await fetch(`${base}/projects/exact-id`, { headers: bearer('projects-token') })).status, 200);
@@ -108,12 +111,14 @@ test('middleware accepts scoped reads alongside API_KEY but not absent or wrong-
   process.env.SERVICE_TOKENS = JSON.stringify([
     { token: 'projects-token', scopes: ['projects:read'] },
     { token: 'agents-token', scopes: ['agents:read'] },
+    { token: 'read-token', scopes: ['orchestrations:read'] },
   ]);
   try {
     await withAuthApi(async (base) => {
       assert.equal((await fetch(`${base}/projects`, { headers: bearer('projects-token') })).status, 200);
       assert.equal((await fetch(`${base}/projects/id`, { headers: bearer('projects-token') })).status, 200);
       assert.equal((await fetch(`${base}/agents`, { headers: bearer('agents-token') })).status, 200);
+      assert.equal((await fetch(`${base}/orchestrations/capabilities`, { headers: bearer('read-token') })).status, 200);
       assert.equal((await fetch(`${base}/projects`)).status, 401);
       assert.equal((await fetch(`${base}/projects`, { headers: bearer('agents-token') })).status, 403);
       assert.equal((await fetch(`${base}/projects`, { headers: bearer('legacy') })).status, 200);

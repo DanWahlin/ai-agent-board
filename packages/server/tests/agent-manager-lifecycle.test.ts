@@ -324,26 +324,13 @@ test('termination is reported busy until stop cleanup finishes', async () => {
   executeResult.resolve({ status: 'complete' });
 });
 
-test('agent-default executes private input byte-for-byte without coding prompt or repo scope', async () => {
-  let options: Record<string, unknown> | undefined;
-  let prompt: string | undefined;
-  const statuses: string[] = [];
+test('agent-default refuses a non-Hermes runtime even when the attempt matches it', () => {
   const manager = managerWithSession({
-    execute: async (value: string) => { prompt = value; return { status: 'complete' }; },
+    execute: async () => ({ status: 'complete' }),
     abort: async () => {}, destroy: async () => {}, send: async () => {},
   });
-  const internals = manager as unknown as { providers: Map<string, { createSession: (value: Record<string, unknown>) => Promise<unknown> }> };
-  const provider = internals.providers.get('copilot')!;
-  const original = provider.createSession;
-  provider.createSession = async (value) => { options = value; return original(value); };
-  const input = '  exact\n<input> with trailing spaces  ';
-  assert.equal(manager.startAgent({ ...task('agent-default'), repoPath: '/should/not/scope', useWorktree: true },
-    async (status) => { statuses.push(status); }, undefined,
-    { attemptId: 'attempt-1', orchestrationMode: 'agent-default', executionInput: input }), true);
-  await waitFor(() => statuses.includes('complete'), 'agent-default run did not complete');
-  assert.equal(prompt, input);
-  assert.equal(options?.systemPrompt, '');
-  assert.equal(options?.repoPath, undefined);
+  assert.equal(manager.startAgent(task('agent-default'), async () => {}, undefined,
+    { attemptId: 'attempt-1', agentType: 'copilot', orchestrationMode: 'agent-default', executionInput: 'private' }), false);
 });
 
 test('coding execution retains its coding prompt contract', async () => {

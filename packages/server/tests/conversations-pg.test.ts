@@ -4,9 +4,11 @@ import { createServer } from 'node:http';
 import express from 'express';
 import pg from 'pg';
 import { PostgresConversationRepository } from '../src/repositories/postgres-conversations.js';
+import { PostgresTaskRepository } from '../src/repositories/postgres.js';
 import { createConversationsRouter } from '../src/routes/conversations.js';
 import { authMiddleware } from '../src/middleware/auth.js';
 import { initPostgresDatabase } from '../src/db.js';
+import type { Task, ExecutionAttempt } from '../src/types.js';
 
 const PG_URL = process.env.TEST_PG_URL || 'postgresql://testuser:testpass@127.0.0.1:5499/conversation_test';
 
@@ -451,5 +453,52 @@ test('[PG] monotonic sequence across appends', serial, async () => {
     const r2 = await a2.json();
     assert.equal(r2.messages[0].seq, 3);
     assert.equal(r2.persistedThroughSeq, 3);
+  });
+});
+
+test('[PG] agent-default context and cancellation CAS preserve a concurrent successor', serial, async () => {
+  await withPgTestServer([], async ({ pool }) => {
+    const repo = new PostgresTaskRepository(pool);
+    const id = `pg-agent-default-${Date.now()}`;
+    await pool.query(`INSERT INTO projects(id,name,is_default,created_at,updated_at)
+      VALUES($1,$2,false,$3,$3) ON CONFLICT(id) DO NOTHING`, [id, id, Date.now()]);
+    const task: Task = {
+      id, projectId: id, title: 'PG agent-default', description: 'visible', priority: 'medium',
+      columnId: 'backlog', agentStatus: 'idle', agentType: 'hermes', createdAt: Date.now(), useWorktree: false,
+      externalSource: 'hermes', externalKey: `${id}-task`,
+    };
+    const attempt = (suffix: string): ExecutionAttempt => ({
+      id: `${id}-${suffix}`, taskId: id, externalSource: 'hermes', externalKey: `${id}-${suffix}`,
+      titleSnapshot: task.title, descriptionSnapshot: task.description, agentType: 'hermes', autoStart: false,
+      requestSnapshot: '{}', status: 'pending', createdAt: Date.now(),
+    });
+    const first = attempt('a');
+    const second = attempt('b');
+    try {
+      await repo.createOrchestration(task, first, {
+        attemptId: first.id, agentType: 'hermes', orchestrationMode: 'agent-default', executionInput: 'first private',
+      });
+      assert.deepEqual(await repo.getCurrentExecution(id), {
+        attemptId: first.id, agentType: 'hermes', orchestrationMode: 'agent-default', executionInput: 'first private',
+      });
+
+      const [cancelledFirst, continued] = await Promise.all([
+        repo.cancelCurrentAttempt(id, first.id),
+        repo.continueOrchestration(id, { agentStatus: 'idle' }, second, {
+          attemptId: second.id, agentType: 'hermes', orchestrationMode: 'agent-default', executionInput: 'second private',
+        }),
+      ]);
+      assert.equal(continued?.created, true);
+      assert.ok(cancelledFirst === undefined || cancelledFirst.agentStatus === 'failed');
+      assert.deepEqual(await repo.getCurrentExecution(id), {
+        attemptId: second.id, agentType: 'hermes', orchestrationMode: 'agent-default', executionInput: 'second private',
+      });
+      assert.equal((await repo.getById(id))?.agentStatus, 'idle');
+      assert.equal((await repo.cancelCurrentAttempt(id, first.id)), undefined);
+      assert.equal((await repo.cancelCurrentAttempt(id, second.id))?.agentStatus, 'failed');
+    } finally {
+      await pool.query('DELETE FROM tasks WHERE id=$1', [id]);
+      await pool.query('DELETE FROM projects WHERE id=$1', [id]);
+    }
   });
 });

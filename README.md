@@ -231,17 +231,21 @@ cd packages/e2e && npx playwright test --reporter=list
 
 The local pre-push hook in `.githooks/pre-push` runs `npm run gate:required`. Run `npm run hooks:install` once per clone to enable it with `core.hooksPath .githooks`.
 
-7 test files covering 81 tests:
+11 test files covering 184 discovered tests (counts from `npx playwright test --list`, not passed tests; integration specs skip at runtime when no authenticated agent CLI is available):
 
-| File | Tests | Coverage |
-|------|-------|----------|
-| `board.spec.ts` | 14 | Task CRUD, drag & drop, theme, priority, sorting, filters, retry |
-| `api-improvements.spec.ts` | 20 | Auto-run, batch create, status endpoint, WebSocket events, follow-up messages |
-| `agent-selector.spec.ts` | 7 | Agent selection UI, badges, worktree dialog |
+| File | Discovered tests | Coverage |
+|------|------------------|----------|
+| `board.spec.ts` | 17 | Task CRUD, drag & drop, theme, priority, sorting, filters, retry |
+| `api-improvements.spec.ts` | 21 | Auto-run, batch create, status endpoint, WebSocket events, follow-up messages |
+| `agent-selector.spec.ts` | 6 | Agent selection UI, badges, worktree dialog |
 | `groups.spec.ts` | 28 | Group CRUD, validation, archive, edge cases (E3/E12), UI |
 | `git-operations.spec.ts` | 8 | Local merge, conflict handling, PR creation, worktree cleanup |
 | `group-integration.spec.ts` | 2 | Full agent execution with real agents, stop & cleanup |
 | `agent-sdk.spec.ts` | 2 | Real Copilot SDK execution (skipped without test repo) |
+| `mobile-responsive.spec.ts` | 51 | Responsive layout across mobile, tablet, and desktop viewports |
+| `projects.spec.ts` | 29 | Projects API, page, creation via URI, config + repo-URL cloning |
+| `task-archive.spec.ts` | 7 | Task archive/unarchive API and board behavior |
+| `templates.spec.ts` | 13 | Template CRUD API |
 
 ## Tech Stack
 

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { FolderKanban, GitBranch, Github, Pencil, Plus, Settings, Star, Trash2, X } from 'lucide-react';
-import type { CreateProjectRequest, Project, ProjectConfig, ProjectPathValidation, UpdateProjectRequest } from '@/types';
+import type { CreateProjectRequest, Project, ProjectPathValidation, ProviderConfig, RoleConfig, SettingsResponse, UpdateProjectRequest } from '@/types';
 import { ThemeToggle } from './ThemeToggle';
 import { ProjectDialog, type ProjectDialogInitialValues } from './ProjectDialog';
 import { ConfigDialog } from './ConfigDialog';
@@ -9,7 +9,7 @@ import { DeleteConfirmDialog } from './DeleteConfirmDialog';
 
 interface ProjectsPageProps {
   projects: Project[];
-  config: ProjectConfig | null;
+  settings: SettingsResponse | null;
   loading: boolean;
   error: string | null;
   initialCreate?: ProjectDialogInitialValues | null;
@@ -18,7 +18,10 @@ interface ProjectsPageProps {
   onCreateProject: (data: CreateProjectRequest) => Promise<unknown>;
   onUpdateProject: (id: string, data: UpdateProjectRequest) => Promise<unknown>;
   onDeleteProject: (id: string) => Promise<unknown>;
+  onUpdateProvider: (provider: ProviderConfig) => Promise<unknown>;
+  onUpdateRole: (role: RoleConfig) => Promise<unknown>;
   onUpdateConfig: (cloneRoot: string) => Promise<unknown>;
+  onTestProvider: (providerId: string, model: string) => Promise<{ available: boolean; model: string; version?: string; message?: string; error?: string } | undefined>;
   onValidateProjectPath: (repoPath: string) => Promise<ProjectPathValidation | undefined>;
   onSelectProjectDirectory: (initialPath?: string) => Promise<string | null | undefined>;
   onOpenProject: (project: Project) => void;
@@ -35,7 +38,7 @@ const countLabels: Array<[keyof NonNullable<Project['taskCounts']>, string]> = [
 
 export function ProjectsPage({
   projects,
-  config,
+  settings,
   loading,
   error,
   initialCreate,
@@ -44,7 +47,10 @@ export function ProjectsPage({
   onCreateProject,
   onUpdateProject,
   onDeleteProject,
+  onUpdateProvider,
+  onUpdateRole,
   onUpdateConfig,
+  onTestProvider,
   onValidateProjectPath,
   onSelectProjectDirectory,
   onOpenProject,
@@ -117,7 +123,8 @@ export function ProjectsPage({
             </button>
             <button
               onClick={() => setConfigOpen(true)}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-300 transition-colors hover:bg-zinc-700/50 hover:text-white"
+              disabled={!settings}
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-300 transition-colors hover:bg-zinc-700/50 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
               aria-label="Settings"
               title="Settings"
             >
@@ -244,9 +251,12 @@ export function ProjectsPage({
 
       <ConfigDialog
         open={configOpen}
-        config={config}
+        settings={settings}
         onClose={() => setConfigOpen(false)}
-        onSubmit={onUpdateConfig}
+        onSaveCloneRoot={onUpdateConfig}
+        onSaveProvider={onUpdateProvider}
+        onSaveRole={onUpdateRole}
+        onTestProvider={onTestProvider}
       />
 
       <DeleteConfirmDialog

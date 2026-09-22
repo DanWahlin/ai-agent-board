@@ -127,7 +127,7 @@ npm run test:e2e:required
 npm run hooks:install
 ```
 
-The committed `.githooks/pre-push` hook runs `npm run gate:required` and must not silently skip E2E. 7 test files, 81 tests (79 active, 2 skipped integration): board (CRUD, drag, theme, priority, sort, filter, retry), API improvements (auto-run, batch, status, events), agent selector, task groups (CRUD, validation, edge cases, UI), git operations (merge, PR, worktree), group integration (real agent execution), agent SDK. Portability/setup problems are blockers to fix, not reasons to skip affected e2e coverage.
+The committed `.githooks/pre-push` hook runs `npm run gate:required` and must not silently skip E2E. 11 test files, 184 discovered tests (counts from `npx playwright test --list`, not passed tests; integration specs skip at runtime when no authenticated agent CLI is available): board (CRUD, drag, theme, priority, sort, filter, retry), API improvements (auto-run, batch, status, events), agent selector, task groups (CRUD, validation, edge cases, UI), git operations (merge, PR, worktree), group integration (real agent execution), agent SDK, mobile-responsive, projects, task archive, templates. Portability/setup problems are blockers to fix, not reasons to skip affected e2e coverage.
 
 ## Code Patterns
 

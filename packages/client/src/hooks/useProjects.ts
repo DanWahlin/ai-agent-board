@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { CreateProjectRequest, UpdateProjectRequest, Project, ProjectConfig } from '@/types';
+import type { CreateProjectRequest, UpdateProjectRequest, Project, ProviderConfig, RoleConfig, SettingsResponse } from '@/types';
 import { api, connectWS } from '@/lib/api';
 
 export function useProjects() {
   const [projects, setProjects] = useState<Project[]>([]);
-  const [config, setConfig] = useState<ProjectConfig | null>(null);
+  const [settings, setSettings] = useState<SettingsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -20,18 +20,18 @@ export function useProjects() {
     }
   }, []);
 
-  const refreshConfig = useCallback(async () => {
+  const refreshSettings = useCallback(async () => {
     try {
-      setConfig(await api.getProjectConfig());
+      setSettings(await api.getSettings());
     } catch (err) {
-      setError(`Failed to load config: ${(err as Error).message}`);
+      setError(`Failed to load settings: ${(err as Error).message}`);
     }
   }, []);
 
   useEffect(() => {
     refreshProjects();
-    refreshConfig();
-  }, [refreshProjects, refreshConfig]);
+    refreshSettings();
+  }, [refreshProjects, refreshSettings]);
 
   useEffect(() => {
     return connectWS((msg) => {
@@ -111,14 +111,48 @@ export function useProjects() {
     }
   }, []);
 
+  const updateProvider = useCallback(async (provider: ProviderConfig) => {
+    try {
+      setError(null);
+      const result = await api.updateProvider(provider.id, provider);
+      setSettings(result);
+      return result;
+    } catch (err) {
+      setError(`Failed to update provider: ${(err as Error).message}`);
+      return undefined;
+    }
+  }, []);
+
   const updateConfig = useCallback(async (cloneRoot: string) => {
     try {
       setError(null);
       const result = await api.updateProjectConfig(cloneRoot);
-      setConfig(result);
+      setSettings(previous => previous ? { ...previous, cloneRoot: result.cloneRoot } : previous);
       return result;
     } catch (err) {
-      setError(`Failed to update config: ${(err as Error).message}`);
+      setError(`Failed to update clone root: ${(err as Error).message}`);
+      return undefined;
+    }
+  }, []);
+
+  const testProvider = useCallback(async (providerId: string, model: string) => {
+    try {
+      setError(null);
+      return await api.testProvider(providerId, model);
+    } catch (err) {
+      setError(`Failed to test provider: ${(err as Error).message}`);
+      return undefined;
+    }
+  }, []);
+
+  const updateRole = useCallback(async (role: RoleConfig) => {
+    try {
+      setError(null);
+      const result = await api.updateRole(role.id, role);
+      setSettings(result);
+      return result;
+    } catch (err) {
+      setError(`Failed to update role: ${(err as Error).message}`);
       return undefined;
     }
   }, []);
@@ -127,7 +161,7 @@ export function useProjects() {
 
   return {
     projects,
-    config,
+    settings,
     loading,
     error,
     clearError,
@@ -137,6 +171,9 @@ export function useProjects() {
     deleteProject,
     validateProjectPath,
     selectProjectDirectory,
+    updateProvider,
+    updateRole,
     updateConfig,
+    testProvider,
   };
 }

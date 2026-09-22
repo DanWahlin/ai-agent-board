@@ -15,6 +15,10 @@
     "packages/e2e",
     "shared"
   ],
+  "engines": {
+    "node": ">=22",
+    "npm": ">=10"
+  },
   "scripts": {
     "dev": "npm run build:shared && npx concurrently -n server,client -c blue,green \"npm run dev:server\" \"npm run dev:client\"",
     "dev:client": "npm run dev -w @ai-agent-board/client",
@@ -25,7 +29,7 @@
     "test": "npm run test:e2e:required",
     "test:e2e": "npm run test:e2e:required",
     "test:e2e:required": "npm run test:required -w @ai-agent-board/e2e",
-    "gate:required": "node scripts/run-contract-tests.cjs && node scripts/run-required-gate.cjs",
+    "gate:required": "npm run build:shared && node scripts/run-contract-tests.cjs && node scripts/run-required-gate.cjs",
     "hooks:install": "node scripts/install-hooks.cjs"
   }
 }
